@@ -1,0 +1,252 @@
+--- a/nvmtl_vk.c
++++ b/nvmtl_vk.c
+@@ -48,6 +48,8 @@
+ #include <limits.h>
+ #include <sys/stat.h>
+ #include <pthread.h>
++#include <dispatch/dispatch.h>
++#include <syslog.h>
+ static pthread_mutex_t g_gpu_clock_lock = PTHREAD_MUTEX_INITIALIZER;
+ static inline const char *nvmtl_pick_vk(const char *staged, const char *dev) {
+     return access(staged, R_OK) == 0 ? staged : dev;
+@@ -150,7 +152,7 @@
+     X(vkCreateImageView) X(vkCreateRenderPass) X(vkCreateFramebuffer) X(vkCreateShaderModule) X(vkDestroyShaderModule) X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) \
+     X(vkDestroyPipeline) X(vkDestroyRenderPass) X(vkCreateGraphicsPipelines) X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCmdPushConstants) X(vkCreateCommandPool) X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer) \
+     X(vkCmdBeginRenderPass) X(vkCmdBindPipeline) X(vkCmdDraw) X(vkCmdEndRenderPass) X(vkEndCommandBuffer) \
+-    X(vkQueueSubmit) X(vkQueueBindSparse) X(vkCreateFence) X(vkWaitForFences) X(vkResetFences) X(vkDestroyFence) X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) X(vkCmdCopyBuffer) \
++    X(vkQueueSubmit) X(vkQueueBindSparse) X(vkCreateFence) X(vkWaitForFences) X(vkResetFences) X(vkDestroyFence) X(vkGetFenceStatus) X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) X(vkCmdCopyBuffer) \
+     X(vkCmdPipelineBarrier) X(vkCmdClearColorImage) X(vkCmdClearDepthStencilImage) X(vkDeviceWaitIdle) X(vkFreeCommandBuffers) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdSetPrimitiveTopology) X(vkCmdSetPrimitiveRestartEnable) X(vkCmdBindVertexBuffers) X(vkCreateDescriptorSetLayout) X(vkCreateDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCmdBindDescriptorSets) X(vkCreateSampler) X(vkDestroySampler) X(vkFreeDescriptorSets) X(vkCmdSetBlendConstants) X(vkCmdSetStencilReference) X(vkCmdSetDepthBias) X(vkCmdFillBuffer) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdCopyImage) X(vkCmdBlitImage) X(vkGetBufferDeviceAddress) X(vkCmdWriteTimestamp) X(vkCreateQueryPool) X(vkCmdResetQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) X(vkCmdCopyQueryPoolResults) X(vkGetQueryPoolResults) X(vkDestroyQueryPool) X(vkResetQueryPool) X(vkCmdDrawIndirect) X(vkCmdDrawIndexedIndirect) X(vkCmdDispatchIndirect) X(vkCmdSetCullMode) X(vkCmdSetFrontFace) X(vkCmdSetDepthTestEnable) X(vkCmdSetDepthWriteEnable) X(vkCmdSetDepthCompareOp) \
+     X(vkDestroyBuffer) X(vkFreeMemory) X(vkDestroyImage) X(vkDestroyImageView) X(vkDestroyFramebuffer) X(vkDestroyCommandPool) \
+     X(vkCmdSetStencilTestEnable) X(vkCmdSetStencilOp) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask)
+@@ -5394,6 +5396,127 @@
+     return nvmtl_vk_submit_wait(&c);
+ }
+ 
++// Asynchronous surface-in upload. WindowServer re-uploads every private-image IOSurface whose seed moved (all surfaces below
++// NVMTL_SURF_SHARE_MINPX pixels, and every multi-plane video frame) on its compositing thread. image_write above copies the
++// whole surface into a staging buffer with the CPU and then waits for the GPU; while a page scrolls or a video plays that
++// was ~70% of WindowServer's main thread (spindump 2026-10-09: memmove page faults + vkWaitForFences under nvmtlSurfaceIn).
++// Here the copy is SUBMITTED and not waited for: queue order puts it ahead of every later submission (the command buffer
++// that samples the texture is committed after this call), and the barrier at its end makes the transfer visible to them.
++// `direct` = the surface's own pages imported as a buffer: the GPU reads them itself and the CPU copies nothing.
++// `hold` (released through `rel` once the copy completed) keeps the texture, its image and that import alive; on failure
++// it is NOT consumed. NVMTL_SURFIN_ASYNC=0 (nvrm610.conf) brings back the synchronous upload.
++#define NVMTL_UPL_INFLIGHT 48u
++typedef struct nvmtl_upl { nvk_cmdbuf c; nvmtl_inflight f; nvk_buffer stage; void *hold; void (*rel)(void *); struct nvmtl_upl *next; } nvmtl_upl;
++static pthread_mutex_t g_upl_lock = PTHREAD_MUTEX_INITIALIZER;
++static nvmtl_upl *g_upl_head, *g_upl_tail;
++static unsigned g_upl_n;
++static _Atomic int g_upl_timer;
++static _Atomic unsigned long long g_upl_direct, g_upl_staged, g_upl_bytes, g_upl_blocked, g_upl_fail;
++int nvmtl_vk_surfin_async_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_SURFIN_ASYNC"); on = !(e && e[0] == '0');
++        syslog(LOG_ERR, "NullMoth-diag: surface-in: IOSurface uploads %s (NVMTL_SURFIN_ASYNC=%s)", on ? "are submitted without waiting; repeatedly uploaded surfaces are read by the GPU from their own pages"
++              : "copy on the CPU and wait for the GPU (old)", e ? e : "unset"); }
++    return on;
++}
++static void nvmtl_upl_done(nvmtl_upl *u)
++{
++    const int r = nvmtl_vk_submit_finish(&u->f);
++    if (r == -2) { g_upl_fail++; free(u); return; }   // device lost: keep what the GPU may still touch, like submit_finish does
++    if (u->stage.buf) nvmtl_vk_buffer_destroy(&u->stage);
++    if (u->hold && u->rel) u->rel(u->hold);
++    if (r) g_upl_fail++;
++    free(u);
++}
++// Finish the uploads whose fence signalled; while more than `keep` are in flight, wait for the oldest.
++static void nvmtl_upl_reap(unsigned keep)
++{
++    for (;;) {
++        pthread_mutex_lock(&g_upl_lock);
++        nvmtl_upl *u = g_upl_head;
++        if (!u || (g_state == 1 && g_upl_n <= keep && pvkGetFenceStatus(g_dev, (VkFence)u->f.fence) != VK_SUCCESS)) { pthread_mutex_unlock(&g_upl_lock); return; }
++        const int blocked = g_upl_n > keep;
++        g_upl_head = u->next; if (!g_upl_head) g_upl_tail = NULL; g_upl_n--;
++        pthread_mutex_unlock(&g_upl_lock);
++        if (blocked) g_upl_blocked++;
++        if (g_state != 1) { free(u); continue; }
++        nvmtl_upl_done(u);
++    }
++}
++static void nvmtl_upl_arm(void);
++static void nvmtl_upl_tick(void *ctx)
++{
++    (void)ctx;
++    nvmtl_upl_reap(UINT_MAX);
++    atomic_store(&g_upl_timer, 0);
++    pthread_mutex_lock(&g_upl_lock); const int more = g_upl_head != NULL; pthread_mutex_unlock(&g_upl_lock);
++    if (more) nvmtl_upl_arm();
++}
++// Uploads nobody follows with more work still complete and release their texture: a short timer reaps them.
++static void nvmtl_upl_arm(void)
++{
++    int z = 0;
++    if (atomic_compare_exchange_strong(&g_upl_timer, &z, 1))
++        dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 16 * NSEC_PER_MSEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), NULL, nvmtl_upl_tick);
++}
++int nvmtl_vk_image_write_async(nvk_image *img, const void *src, size_t row_bytes, const nvk_buffer *direct, size_t direct_off,
++                               void *hold, void (*rel)(void *))
++{
++    if (g_state != 1 || !img || !img->img) return -1;
++    const size_t bpp = img->bpp ? img->bpp : 4;
++    const uint32_t bw = img->bw ? img->bw : 1;
++    const uint32_t cols = nvmtl_blocks(img->w, img->bw), rows = nvmtl_blocks(img->h, img->bh);
++    if (row_bytes < (size_t)cols * bpp) { nvlog("image_write_async: bytesPerRow %zu < %u blocks * %zu B", row_bytes, cols, bpp); return -1; }
++    nvmtl_upl_reap(NVMTL_UPL_INFLIGHT);
++    nvmtl_upl *u = calloc(1, sizeof *u); if (!u) return -1;
++    VkBufferImageCopy bic = { 0, 0, 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
++    VkBuffer from; int isdirect = 0;
++    if (direct && direct->buf && src && !(row_bytes % bpp) && !(direct_off % bpp) && !(direct_off & 3)
++        && direct_off + row_bytes * (rows - 1) + (size_t)cols * bpp <= direct->size) {
++        bic.bufferOffset = direct_off; bic.bufferRowLength = (uint32_t)(row_bytes / bpp * bw);
++        from = (VkBuffer)direct->buf; isdirect = 1;
++    } else {
++        if (!src || nvmtl_vk_buffer_create((size_t)cols * rows * bpp, 1, &u->stage) || !u->stage.map) {
++            if (u->stage.buf) nvmtl_vk_buffer_destroy(&u->stage);
++            free(u); return -1; }
++        uint8_t *dst = (uint8_t *)u->stage.map;
++        for (uint32_t y = 0; y < rows; y++)
++            memcpy(dst + (size_t)y * cols * bpp, (const uint8_t *)src + (size_t)y * row_bytes, (size_t)cols * bpp);
++        from = (VkBuffer)u->stage.buf;
++    }
++    if (nvmtl_vk_cmd_begin(NULL, &u->c)) { if (u->stage.buf) nvmtl_vk_buffer_destroy(&u->stage); free(u); return -1; }
++    VkImageSubresourceRange range = { nvmtl_barrier_aspect(img), 0, 1, 0, 1 };
++    // Not waited for any more, so order the overwrite after whatever earlier submissions still do with the image.
++    VkImageMemoryBarrier toDst = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++        VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
++    pvkCmdPipelineBarrier(u->c.cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
++    pvkCmdCopyBufferToImage(u->c.cb, from, (VkImage)img->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
++    VkImageMemoryBarrier toRead = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL,
++        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
++        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
++    pvkCmdPipelineBarrier(u->c.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &toRead);
++    img->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++    u->hold = hold; u->rel = rel;
++    const int r = nvmtl_vk_submit_begin(&u->c, &u->f);
++    if (r) { g_upl_fail++; if (r != -2 && u->stage.buf) nvmtl_vk_buffer_destroy(&u->stage); free(u); return -1; }
++    pthread_mutex_lock(&g_upl_lock);
++    if (g_upl_tail) g_upl_tail->next = u; else g_upl_head = u;
++    g_upl_tail = u; const unsigned inflight = ++g_upl_n;
++    pthread_mutex_unlock(&g_upl_lock);
++    const unsigned long long k = (isdirect ? g_upl_direct++ : g_upl_staged++) + 1, all = g_upl_direct + g_upl_staged;
++    g_upl_bytes += (size_t)cols * rows * bpp;
++    if (all == 1 || !(all & 0xFFF))
++        syslog(LOG_ERR, "NullMoth-diag: surface-in census: %llu async uploads (%llu read by the GPU from the surface's pages, %llu staged by the CPU), %llu MB, "
++              "%llu waited for the in-flight cap of %u, %llu failed; %u in flight now (this one %s, #%llu)",
++              all, (unsigned long long)g_upl_direct, (unsigned long long)g_upl_staged, (unsigned long long)(g_upl_bytes >> 20),
++              (unsigned long long)g_upl_blocked, NVMTL_UPL_INFLIGHT, (unsigned long long)g_upl_fail, inflight, isdirect ? "direct" : "staged", k);
++    nvmtl_upl_arm();
++    return 0;
++}
++
+ int nvmtl_vk_copy_buffer(nvk_queue *q, nvk_buffer *src, size_t srcOff, nvk_buffer *dst, size_t dstOff, size_t size)
+ {
+     const uint64_t t0 = nvmtl_perf_now();
+--- a/nvmtl_vk.h
++++ b/nvmtl_vk.h
+@@ -191,6 +191,9 @@
+ extern void (*nvmtl_pre_submit_hook)(void);
+ int  nvmtl_vk_image_read(nvk_queue *q, nvk_image *img, void *dst, size_t row_bytes);
+ int  nvmtl_vk_image_write(nvk_queue *q, nvk_image *img, const void *src, size_t row_bytes);
++int  nvmtl_vk_image_write_async(nvk_image *img, const void *src, size_t row_bytes, const nvk_buffer *direct, size_t direct_off,
++                                void *hold, void (*rel)(void *));
++int  nvmtl_vk_surfin_async_on(void);
+ int  nvmtl_vk_copy_buffer(nvk_queue *q, nvk_buffer *src, size_t srcOff, nvk_buffer *dst, size_t dstOff, size_t size);
+ int  nvmtl_vk_image_create_mips(uint32_t w, uint32_t h, int bgra, uint32_t mips, nvk_image *out);
+ int  nvmtl_vk_image_create_ex(uint32_t w, uint32_t h, uint32_t vkfmt, uint32_t bpp, int a8, uint32_t mips, nvk_image *out);
+--- a/NVMTLObjects.m
++++ b/NVMTLObjects.m
+@@ -980,6 +980,7 @@
+     return made > gone ? made - gone : 0;
+ }
+ unsigned long long nvmtl_tex_objs_released(void) { return nvmtl_tex_objs_gone; }
++static _Atomic size_t gSurfImpBytes;
+ @implementation NVMTLTexture
+ + (instancetype)alloc { nvmtl_tex_objs_made++; return [super alloc]; }
+ - (void)setResponsibleProcess:(int)pid { static int said; if (!said++) nvlog("setResponsibleProcess: pid %d on a texture - per-process attribution is not kept; nothing to set (said once)", pid); }
+@@ -1020,6 +1021,7 @@
+     if (!_parent && _bparkable && _backBuf && _i.img) nvmtl_bpark_put(_backBuf, &_i, _pkey);
+     if (!_parent) nvmtl_vk_image_destroy(&_i);
+     if (!_parent && _vramOn) { nvmtl_vk_buffer_destroy(&_vramBuf); _vramOn = NO; }
++    if (!_parent && _surfImp.buf) { nvmtl_vk_buffer_destroy(&_surfImp); atomic_fetch_sub(&gSurfImpBytes, _surfImpLen); _surfImpLen = 0; }
+     if (_surfOwned && _surf) CFRelease(_surf);
+     free(_cpyShadow); _cpyShadow = NULL; _cpyBuf = nil;
+     if (_subHeap) { NVMTLHeap *h = _subHeap; NSUInteger c = _subCharge; _subHeap = nil; _subCharge = 0;
+@@ -1047,6 +1049,29 @@
+             nvlog("copied buffer texture: re-upload FAILED (%ux%u)", r->_i.w, r->_i.h);
+         else { static _Atomic unsigned long long n; const unsigned long long k = atomic_fetch_add(&n, 1) + 1;
+             if (!(k & (k - 1))) nvlog("copied buffer texture (linear view refused): re-synced from its buffer %llu times (last %ux%u)", k, r->_i.w, r->_i.h); }
++    }
++}
++// The surface's pages as a GPU-readable buffer, so a re-upload is a GPU copy straight from them (no CPU copy, no staging).
++// Only for a surface uploaded before (static contents keep no pinned pages) and within NVMTL_SURFIN_IMPORT_MB (default
++// 256, 0 = never) of imported surface memory in this process. Called on the root texture with the surface locked.
++- (const nvk_buffer *)nvmtlSurfaceImport {
++    @synchronized (self) {
++        if (_surfUploads++ < 1) return NULL;
++        void *ab = IOSurfaceGetBaseAddress(_surf);
++        if (_surfImp.buf) return ab == _surfImpBase ? &_surfImp : NULL;
++        if (_surfImpTried || !ab) return NULL;
++        _surfImpTried = YES;
++        static long capmb = -1;
++        if (capmb < 0) { const char *e = getenv("NVMTL_SURFIN_IMPORT_MB"); capmb = e && *e ? atol(e) : 256; if (capmb < 0) capmb = 0;
++            nvdiag_emit("surface-in: up to %ld MB of re-uploaded IOSurfaces are read by the GPU from their own pages (NVMTL_SURFIN_IMPORT_MB=%s)", capmb, e ?: "unset"); }
++        const size_t pg = (size_t)getpagesize(), len = (IOSurfaceGetAllocSize(_surf) + pg - 1) / pg * pg;
++        if (!len || ((uintptr_t)ab & (pg - 1))) return NULL;
++        if (atomic_fetch_add(&gSurfImpBytes, len) + len > (size_t)capmb << 20) { atomic_fetch_sub(&gSurfImpBytes, len); return NULL; }
++        if (nvmtl_vk_buffer_import_host(ab, len, &_surfImp)) { memset(&_surfImp, 0, sizeof _surfImp); atomic_fetch_sub(&gSurfImpBytes, len); return NULL; }
++        _surfImpBase = ab; _surfImpLen = len;
++        static _Atomic unsigned long long n; const unsigned long long k = atomic_fetch_add(&n, 1) + 1;
++        if (!(k & (k - 1))) nvdiag_emit("surface-in: imported IOSurface pages #%llu (%ux%u, %zu KB; %zu MB imported now)", k, _i.w, _i.h, len >> 10, (size_t)atomic_load(&gSurfImpBytes) >> 20);
++        return &_surfImp;
+     }
+ }
+ - (void)nvmtlSurfaceIn {
+@@ -1081,18 +1106,29 @@
+           r->_surfSeed = now; r->_surfSynced = YES; g_surfin_skip++;
+           static unsigned ns; if (ns++ < 6 || ns % 2000 == 0) nvlog("item 7: surface-in SKIPPED (shared VRAM current at seed %u): %llu skipped, %llu copied", now, g_surfin_skip, g_surfin_copy);
+           return; } }
+-    { const uint32_t sid = (uint32_t)IOSurfaceGetID(r->_surf), now = IOSurfaceGetSeed(r->_surf);
++    static _Atomic unsigned nupdiag;  // the tag read below is an IOSurface IPC: only while the diagnostic still prints
++    if (atomic_fetch_add(&nupdiag, 1) < 400) { const uint32_t sid = (uint32_t)IOSurfaceGetID(r->_surf), now = IOSurfaceGetSeed(r->_surf);
+       CFStringRef k = CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), (unsigned long)r->_plane); CFTypeRef v = IOSurfaceCopyValue(r->_surf, k); CFRelease(k);
+       uint32_t tg[3] = { 0, 0, 0 }; if (v && CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) == (CFIndex)sizeof tg) memcpy(tg, CFDataGetBytePtr((CFDataRef)v), sizeof tg);
+       if (v) CFRelease(v);
+-      NVDIAG(400, "surfin UPLOAD %s surf %u %ux%u fmt %u: seed now %u, tag %s seed %u gen %u, texture synced %d at seed %u, GPU writes in flight %d",
++      nvdiag_emit("surfin UPLOAD %s surf %u %ux%u fmt %u: seed now %u, tag %s seed %u gen %u, texture synced %d at seed %u, GPU writes in flight %d",
+              r->_vramOn ? "over shared VRAM" : "into private image", sid, r->_i.w, r->_i.h, r->_i.fmt, now,
+              tg[0] == 0x564d5634u ? "ok" : "none", tg[1], tg[2], r->_surfSynced, r->_surfSeed, nvsd_pending(sid)); }
+     uint32_t seed = 0;
+     if (IOSurfaceLock(r->_surf, kIOSurfaceLockReadOnly, &seed) != kIOReturnSuccess) { nvlog("G13 surface-in: IOSurfaceLock FAILED"); return; }
+     void *base = IOSurfaceGetBaseAddressOfPlane(r->_surf, (uint32_t)r->_plane);
+     size_t row = IOSurfaceGetBytesPerRowOfPlane(r->_surf, (uint32_t)r->_plane);
+-    int rc = (base && row) ? nvmtl_vk_image_write(r->_q, &r->_i, base, row) : -1;
++    int rc = -1;
++    if (base && row && !r->_vramOn && nvmtl_vk_surfin_async_on()) {
++        // Private image: submitted without waiting (only this process's queue reads it, and queue order puts the copy first);
++        // the GPU reads the surface's pages itself once it is a repeat upload. An upload over SHARED VRAM stays synchronous:
++        // the tag set below tells other processes - on other GPU channels - that the VRAM already holds these pages.
++        const nvk_buffer *dir = [r nvmtlSurfaceImport];
++        const size_t off = dir ? (size_t)((const uint8_t *)base - (const uint8_t *)r->_surfImpBase) : 0;
++        void *hold = (__bridge_retained void *)r;
++        rc = nvmtl_vk_image_write_async(&r->_i, base, row, dir && base >= r->_surfImpBase ? dir : NULL, off, hold, nvmtl_pre_release);
++        if (rc) { (void)CFBridgingRelease(hold); rc = nvmtl_vk_image_write(r->_q, &r->_i, base, row); }
++    } else if (base && row) rc = nvmtl_vk_image_write(r->_q, &r->_i, base, row);
+     if (!rc && r->_i.bpp == 4) { char tag[24]; snprintf(tag, sizeof tag, "in%u-", (unsigned)IOSurfaceGetID(r->_surf)); nvmtl_frame_dump(tag, base, row, r->_i.w, r->_i.h); }
+     IOSurfaceUnlock(r->_surf, kIOSurfaceLockReadOnly, NULL);
+     if (rc) { nvlog("G13 surface-in: upload FAILED (%ux%u) — retried at the next use", r->_i.w, r->_i.h); return; }
+--- a/NVMTLObjects.h
++++ b/NVMTLObjects.h
+@@ -265,6 +265,8 @@
+ @interface NVMTLBuffer () { @public BOOL _subPlaced; } @end
+ typedef struct { nvk_image img; uint32_t key[12]; NSUInteger off, len; } nvmtl_park_t;
+ @interface NVMTLTexture () { @public BOOL _subPlaced, _parkable; uint32_t _pkey[12]; NSUInteger _pkLen; } @end
++// Surface-in: the IOSurface's pages imported as a GPU buffer (on the root texture) once it is uploaded more than once.
++@interface NVMTLTexture () { @public nvk_buffer _surfImp; void *_surfImpBase; size_t _surfImpLen; uint32_t _surfUploads; BOOL _surfImpTried; } @end
+ @interface NVMTLHeap () { @public nvmtl_park_t *_pk; uint32_t _npk; } @end
+ @interface NVMTLBuffer () { @public nvmtl_park_t *_bpk; uint32_t _nbpk; os_unfair_lock _bpl; } @end
+ @interface NVMTLTexture () { @public BOOL _bparkable; } @end

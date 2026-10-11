@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key><string>en</string>
+	<key>CFBundleIdentifier</key><string>local.juren.IntelBTProductName</string>
+	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+	<key>CFBundleName</key><string>IntelBTProductName</string>
+	<key>CFBundlePackageType</key><string>KEXT</string>
+	<key>CFBundleShortVersionString</key><string>1.0.0</string>
+	<key>CFBundleVersion</key><string>1.0.0</string>
+	<key>IOKitPersonalities</key>
+	<dict>
+		<!-- Gives Intel's AX211 BT (8087:0033, no product string descriptor) a product name that is NOT
+		     "Bluetooth USB Host Controller": bluetoothd (15.8.1 bm3_usb) treats a device with exactly that name
+		     as Apple's internal Broadcom controller and runs Broadcom init on it ("HCI initialization failed");
+		     with any other name, and NVRAM bluetoothHostControllerSwitchBehavior=always, it is taken as an
+		     external dongle and gets the generic init. -->
+		<key>Intel AX211 Bluetooth product name</key>
+		<dict>
+			<key>CFBundleIdentifier</key><string>com.apple.driver.AppleUSBHostMergeProperties</string>
+			<key>IOClass</key><string>AppleUSBHostMergeProperties</string>
+			<key>IOProviderClass</key><string>IOUSBHostDevice</string>
+			<key>IOProviderMergeProperties</key>
+			<dict>
+				<key>USB Product Name</key><string>Intel Wireless Bluetooth</string>
+				<key>USB Vendor Name</key><string>Intel Corporation</string>
+			</dict>
+			<key>idVendor</key><integer>32903</integer>
+			<key>idProduct</key><integer>51</integer>
+		</dict>
+	</dict>
+	<key>OSBundleRequired</key><string>Root</string>
+</dict>
+</plist>

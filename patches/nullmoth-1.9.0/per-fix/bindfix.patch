@@ -1,0 +1,147 @@
+--- nvmtl_vk.c.pre-bindfix	2026-10-10 10:36:16
++++ nvmtl_vk.c	2026-10-10 10:36:16
+@@ -15,6 +15,7 @@
+ #define VK_NO_PROTOTYPES 1
+ #include <vulkan/vulkan.h>
+ #include "nvmtl_vk.h"
++#include "nvmtl_bindfix.h"
+ #include "nvmtl_sampler_state.h"
+ static int g_sampler_anisotropy, g_sampler_mirror_clamp;
+ static int g_scalar_layout;
+@@ -574,6 +575,7 @@
+     }
+     g_lib = dlopen(NVMTL_ICD_LIB, RTLD_NOW | RTLD_LOCAL);
+     if (g_lib) {
++        nvbf_install(g_lib, NVMTL_ICD_LIB);
+         pvkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(g_lib, "vkGetInstanceProcAddr");
+         if (!pvkGetInstanceProcAddr)
+             pvkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(g_lib, "vk_icdGetInstanceProcAddr");
++++ new file nvmtl_bindfix.h (full copy follows)
+// nvmtl_bindfix.h - keeps the kernel's "which connection owns this fd number" table free of duplicates.
+//
+// libvulkan_nouveau (nvrm_xnu.c) gives every RM connection a placeholder fd (open("/dev/null")) and tells the NVRM kext about it
+// with IOConnectCallScalarMethod(conn, SEL_BINDFD, fd). The kext finds the connection for an fd number by scanning its client
+// table for the FIRST one bound to that number. A pooled connection that is closed keeps its old number in the kernel; when the
+// number is handed out again a second connection binds to it, and from then on the kernel's map ioctl puts the mapping context on
+// the OLD connection while the mmap goes through the new one: IOConnectMapMemory64 -> kIOReturnBadArgument, the old connection
+// keeps an unconsumed context, and every later map on that number fails with NV_ERR_STATE_IN_USE (0x63), reported by Vulkan as
+// VK_ERROR_OUT_OF_DEVICE_MEMORY. (Chrome's GPU process dies of it: pipeline creation, readbacks and submissions fail.)
+//
+// This interposes, for the Vulkan driver image only, IOConnectCallScalarMethod / IOServiceClose / IOConnectMapMemory64: before a
+// connection binds to fd N, any other connection this process bound to N is unbound first. NVMTL_BINDFIX=0 turns it off.
+#pragma once
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <IOKit/IOKitLib.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+#include <syslog.h>
+#include <dlfcn.h>
+
+struct nvbf_tuple { const void *replacement; const void *replacee; };
+extern void dyld_dynamic_interpose(const struct mach_header *mh, const struct nvbf_tuple *array, size_t count);
+
+#define NVBF_N 8192
+static struct { io_connect_t conn; int fd; } g_nvbf[NVBF_N];
+static pthread_mutex_t g_nvbf_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic unsigned long long g_nvbf_fixed, g_nvbf_binds, g_nvbf_mapfail, g_nvbf_full;
+
+static int nvbf_known(io_connect_t conn)
+{
+    int k = 0; pthread_mutex_lock(&g_nvbf_lock);
+    for (int i = 0; i < NVBF_N; i++) if (g_nvbf[i].conn == conn) { k = 1; break; }
+    pthread_mutex_unlock(&g_nvbf_lock); return k;
+}
+static kern_return_t nvbf_IOServiceOpen(io_service_t svc, task_port_t task, uint32_t type, io_connect_t *conn)
+{
+    const kern_return_t kr = IOServiceOpen(svc, task, type, conn);
+    if (kr == KERN_SUCCESS && conn && *conn && (IOObjectConformsTo(svc, "NVAccel") || IOObjectConformsTo(svc, "NVRM"))) {
+        pthread_mutex_lock(&g_nvbf_lock);
+        int placed = 0;
+        for (int i = 0; i < NVBF_N; i++) if (!g_nvbf[i].conn || g_nvbf[i].conn == *conn) { g_nvbf[i].conn = *conn; g_nvbf[i].fd = -1; placed = 1; break; }
+        if (!placed) atomic_fetch_add(&g_nvbf_full, 1);
+        pthread_mutex_unlock(&g_nvbf_lock);
+    }
+    return kr;
+}
+static kern_return_t nvbf_IOConnectCallScalarMethod(mach_port_t conn, uint32_t sel, const uint64_t *in, uint32_t inCnt, uint64_t *out, uint32_t *outCnt)
+{
+    if (sel == 3 && inCnt == 1 && in && nvbf_known(conn)) {   // SEL_BINDFD on one of our NVRM connections
+        const int64_t fd = (int64_t)in[0];
+        io_connect_t stale = 0; int found = 0;
+        pthread_mutex_lock(&g_nvbf_lock);
+        { const unsigned long long nb = atomic_fetch_add(&g_nvbf_binds, 1) + 1; if (nb == 1 || !(nb & (nb - 1))) syslog(LOG_ERR, "NullMoth-diag: nvrm bindfix: %llu SEL_BINDFD calls seen so far, %llu corrected", nb, (unsigned long long)atomic_load(&g_nvbf_fixed)); }
+        for (int i = 0; i < NVBF_N; i++) {
+            if (!g_nvbf[i].conn) continue;
+            if (g_nvbf[i].conn == conn) { found = 1; g_nvbf[i].fd = fd >= 0 ? (int)fd : -1; if (fd >= 0) continue; }
+            else if (fd >= 0 && g_nvbf[i].fd == (int)fd) { if (!stale) stale = g_nvbf[i].conn; g_nvbf[i].fd = -1; }
+        }
+        pthread_mutex_unlock(&g_nvbf_lock);
+        if (stale) {
+            uint64_t m = (uint64_t)(int64_t)-2;
+            IOConnectCallScalarMethod(stale, 3, &m, 1, NULL, NULL);
+            const unsigned long long k = atomic_fetch_add(&g_nvbf_fixed, 1) + 1;
+            if (k <= 8 || !(k & (k - 1)))
+                syslog(LOG_ERR, "NullMoth-diag: nvrm bindfd: fd %lld was still bound to another connection - unbound it first (#%llu of %llu binds)",
+                       (long long)fd, k, (unsigned long long)atomic_load(&g_nvbf_binds));
+        }
+    }
+    return IOConnectCallScalarMethod(conn, sel, in, inCnt, out, outCnt);
+}
+static kern_return_t nvbf_IOServiceClose(io_connect_t conn)
+{
+    pthread_mutex_lock(&g_nvbf_lock);
+    for (int i = 0; i < NVBF_N; i++) if (g_nvbf[i].conn == conn) { g_nvbf[i].conn = 0; g_nvbf[i].fd = -1; }
+    pthread_mutex_unlock(&g_nvbf_lock);
+    return IOServiceClose(conn);
+}
+static kern_return_t nvbf_IOConnectMapMemory64(io_connect_t conn, uint32_t type, task_port_t task, mach_vm_address_t *addr, mach_vm_size_t *size, IOOptionBits opt)
+{
+    const kern_return_t kr = IOConnectMapMemory64(conn, type, task, addr, size, opt);
+    if (kr != KERN_SUCCESS && nvbf_known(conn)) {
+        const unsigned long long k = atomic_fetch_add(&g_nvbf_mapfail, 1) + 1;
+        if (k <= 16 || !(k & (k - 1)))
+            syslog(LOG_ERR, "NullMoth: nvrm: IOConnectMapMemory64 failed 0x%x (#%llu; %llu bindfd corrections so far)", kr, k, (unsigned long long)atomic_load(&g_nvbf_fixed));
+    }
+    return kr;
+}
+// dyld_dynamic_interpose does nothing here (macOS 15: checked with a stand-alone test), so the Vulkan driver's own import
+// pointers are rewritten directly (what fishhook does): every pointer-sized word in its __DATA_CONST / __DATA segments that
+// holds the address of one of the IOKit functions is replaced by the wrapper. Called right after the driver was dlopen'ed.
+#include <mach/mach.h>
+#include <mach/vm_map.h>
+static unsigned nvbf_patch_image(const struct mach_header_64 *mh, intptr_t slide, const void *const old[], const void *const rep[], unsigned n)
+{
+    unsigned hits = 0;
+    const struct load_command *lc = (const struct load_command *)(mh + 1);
+    for (uint32_t c = 0; c < mh->ncmds; c++, lc = (const struct load_command *)((const char *)lc + lc->cmdsize)) {
+        if (lc->cmd != LC_SEGMENT_64) continue;
+        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+        if (strcmp(seg->segname, "__DATA") && strcmp(seg->segname, "__DATA_CONST")) continue;
+        uintptr_t *p = (uintptr_t *)(seg->vmaddr + slide); size_t words = seg->vmsize / sizeof(uintptr_t);
+        for (size_t w = 0; w < words; w++) for (unsigned k = 0; k < n; k++) if (p[w] == (uintptr_t)old[k]) {
+            vm_address_t pg = (vm_address_t)((uintptr_t)&p[w] & ~(uintptr_t)(vm_page_size - 1));
+            if (vm_protect(mach_task_self(), pg, vm_page_size, 0, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) continue;
+            p[w] = (uintptr_t)rep[k]; hits++;
+        }
+    }
+    return hits;
+}
+static void nvbf_install(void *lib_handle, const char *path)
+{
+    const char *e = getenv("NVMTL_BINDFIX");
+    if (e && e[0] == '0') return;
+    static int done; if (done) return; done = 1; (void)lib_handle;
+    const struct mach_header_64 *mh = NULL; intptr_t slide = 0;
+    for (uint32_t i = 0, n = _dyld_image_count(); i < n; i++) {
+        const char *nm = _dyld_get_image_name(i);
+        if (nm && ((path && !strcmp(nm, path)) || strstr(nm, "libvulkan_nouveau"))) { mh = (const struct mach_header_64 *)_dyld_get_image_header(i); slide = _dyld_get_image_vmaddr_slide(i); break; }
+    }
+    if (!mh) { syslog(LOG_ERR, "NullMoth: nvrm bindfix: Vulkan driver image not found - not installed"); return; }
+    const void *const old[4] = { (const void *)IOServiceOpen, (const void *)IOConnectCallScalarMethod, (const void *)IOServiceClose, (const void *)IOConnectMapMemory64 };
+    const void *const rep[4] = { (const void *)nvbf_IOServiceOpen, (const void *)nvbf_IOConnectCallScalarMethod, (const void *)nvbf_IOServiceClose, (const void *)nvbf_IOConnectMapMemory64 };
+    const unsigned hits = nvbf_patch_image(mh, slide, old, rep, 4);
+    syslog(LOG_ERR, "NullMoth-diag: nvrm bindfix installed: %u import pointers of the Vulkan driver now go through the fd-binding guard (NVMTL_BINDFIX=%s)", hits, e ?: "unset");
+}

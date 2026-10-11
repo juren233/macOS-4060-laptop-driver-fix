@@ -1,0 +1,24 @@
+--- nvmtl_vk.c.pre-glsamplepos	2026-10-11 21:22:04
++++ nvmtl_vk.c	2026-10-11 21:25:00
+@@ -4285,7 +4285,20 @@
+     if (!nvmtl_sample_pattern_valid(&pattern) || pattern.count != (p->samples > 1 ? p->samples : 1)) {
+         nvlog("sample positions: count/pattern incompatible with render pipeline"); return -1;
+     }
+-    if (ps->sample_pattern.count && !g_sample_locations) { nvlog("sample positions: backend unavailable"); return -1; }
++    // Apple's GL-on-Metal renderer names sample positions on EVERY multisample pass (Steam/CEF draws through ANGLE on GL),
++    // although the device answers areProgrammableSamplePositionsSupported NO. Refusing the pass dropped all of its draws
++    // (black/missing UI). Without the sample-locations backend the pass now runs on the standard pattern: equal to what GL
++    // asks for (it asks for the standard one), and only antialiasing coverage can differ otherwise.
++    if (ps->sample_pattern.count && !g_sample_locations) {
++        nvmtl_sample_pattern std, want;
++        int zero = 1; for (uint32_t i = 0; i < pattern.count; i++) zero &= pattern.position[i].x == 0 && pattern.position[i].y == 0;
++        const int same = !nvmtl_sample_default(pattern.count, &std) && !nvmtl_sample_pattern_quantize(&pattern, &want) && !memcmp(&std, &want, sizeof std);
++        static int said; if (said++ < 4) { char pos[160] = ""; for (uint32_t i = 0; i < pattern.count && i < 8; i++)
++                snprintf(pos + strlen(pos), sizeof pos - strlen(pos), " (%.4g,%.4g)", pattern.position[i].x, pattern.position[i].y);
++            nvlog("sample positions: no sample-locations backend - %u-sample pass runs on the standard pattern (%s; asked:%s)",
++                  pattern.count, same ? "the pattern asked for" : zero ? "GL's all-zero placeholder" : "the pattern asked for DIFFERS, coverage may differ", pos); }
++        if (nvmtl_sample_default(pattern.count, &pattern)) return -1;
++    }
+     if (nvmtl_sample_pattern_quantize(&pattern, &pattern)) return -1;
+     uint32_t cf[NVMTL_NCOL], rmask, ncol = nvmtl_rt_shape(p, cf, &rmask);
+     for (uint32_t i = 0; i < ncol; i++) {

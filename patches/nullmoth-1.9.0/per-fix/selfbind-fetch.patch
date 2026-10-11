@@ -1,0 +1,163 @@
+--- a/plugin/NVMTLObjects.m
++++ b/plugin/NVMTLObjects.m
+@@ -3036,21 +3036,81 @@
+             return NULL; }
+         sr->_selfShadowOn = YES;
+     }
+-    _selfSurf = sr; _selfMark = YES;
++    if (!_selfMark || _selfSurf != sr) _selfSynced = NO;   // draws while unmarked were not tracked: the next snapshot is whole
++    _selfSurf = sr; _selfMark = YES; _selfBindTex = nt; _selfOwnBound = NO;
+     return sr->_selfShadow.view;
+ }
+ 
++// What the draw about to be recorded can write: its scissor rect (Metal's default scissor is the whole attachment).
++// Rects that touch merge into their bounding box, so the list stays disjoint; past 8 the whole image counts as drawn.
++- (void)nvmtlSelfNoteDraw {
++    nvk_image *a = [_selfSurf nvi];
++    if (_selfDirtyAll || !_hasSC || !a || _sc[0] >= a->w || _sc[1] >= a->h) { _selfDirtyAll = _selfDirtyAll || !_hasSC; return; }
++    uint32_t x0 = _sc[0], y0 = _sc[1], x1 = x0 + MIN(_sc[2], a->w - x0), y1 = y0 + MIN(_sc[3], a->h - y0);
++    if (x1 <= x0 || y1 <= y0) return;
++    for (uint32_t i = 0; i < _selfDirtyN; ) {
++        uint32_t *d = _selfDirty[i];
++        if (x0 > d[0] + d[2] || d[0] > x1 || y0 > d[1] + d[3] || d[1] > y1) { i++; continue; }
++        x0 = MIN(x0, d[0]); y0 = MIN(y0, d[1]); x1 = MAX(x1, d[0] + d[2]); y1 = MAX(y1, d[1] + d[3]);
++        memmove(d, _selfDirty[--_selfDirtyN], sizeof _selfDirty[0]); i = 0;   // re-check the grown rect against the rest
++    }
++    if (_selfDirtyN == 8) { _selfDirtyAll = YES; return; }
++    _selfDirty[_selfDirtyN][0] = x0; _selfDirty[_selfDirtyN][1] = y0; _selfDirty[_selfDirtyN][2] = x1 - x0; _selfDirty[_selfDirtyN][3] = y1 - y0; _selfDirtyN++;
++}
+ // Bring the shadow up to date with every draw recorded so far. Must run before a draw that samples the shadow: the
+ // copy needs the render pass closed (and an occlusion query may not cross vkCmdEndRenderPass - close it and re-arm the
+ // mode after the restart; endEncoding already sums multiple queries per offset).
++// WindowServer draws one sampling quad after another (window corners, shadows), and a whole-surface copy of its 28 MB
++// framebuffer before each one cost ~0.24 ms - 36 of them in a Cmd-Tab frame. The first snapshot in an encoder (or after
++// untracked writes) copies everything; later ones copy only the scissor rects drawn since, and none at all when nothing
++// was drawn.
++// Core Animation's uber shaders (fixed_frag_*) emulate framebuffer fetch on GPUs without it: attachment_0..2 (texture
++// slots 0..2) are the render targets themselves and are only read at the fragment's own pixel. A per-pixel read needs
++// no copy - only the earlier draws' writes made visible - so the pass is closed, a full barrier recorded and the pass
++// restarted (~15 us) instead of snapshotting the 28 MB framebuffer (~240 us; WindowServer issued 36 of them in a Cmd-Tab
++// frame). The slot then samples the surface itself. Each such draw is one quad (two triangles that do not overlap), so a
++// pixel is never read after the same draw wrote it. Only for the surface's own linear image: with a tiled render shadow
++// the live image is the shadow and the copy path stays. A draw recorded before the pass begins keeps the copy path too
++// (its read would race the pass's load action).
++- (BOOL)nvmtlSelfFetchMode {
++    if (_selfSlot > 2 || !_ps || ![_ps->_fname hasPrefix:@"fixed_frag_"] || !_selfBindTex) return NO;
++    return [self nvmtlLiveImageOf:_selfSurf] == [_selfSurf nvi];
++}
+ - (BOOL)nvmtlSelfRefresh {
+     if (!_selfMark || !_selfSurf) return YES;
++    if (_begun && _cb->_c.in_rp && [self nvmtlSelfFetchMode]) {
++        const BOOL visWas = (_visActive || _visPending); const NSUInteger visOff = _visOffset;
++        [self nvmtlCloseVisibility];
++        nvmtl_vk_cmd_end_render(&_cb->_c);
++        nvmtl_vk_cmd_barrier(&_cb->_c);
++        if (![self nvmtlBeginPassLoad:(_load | NVMTL_LOAD_ALL)]) { nvlog("self-bind guard: pass restart FAILED - encoder refused"); _refused = YES; return NO; }
++        nvmtl_vk_cmd_set_cull(&_cb->_c, _cull);
++        if (_hasVP) nvmtl_vk_cmd_set_viewport(&_cb->_c, _vp[0], _vp[1], _vp[2], _vp[3], _vp[4], _vp[5]);
++        if (_hasSC) nvmtl_vk_cmd_set_scissor(&_cb->_c, (int32_t)_sc[0], (int32_t)_sc[1], _sc[2], _sc[3]);
++        [self nvmtlApplyDepthStencil];
++        if (visWas) [self setVisibilityResultMode:MTLVisibilityResultModeCounting offset:visOff];
++        if (!_selfOwnBound) {
++            if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_FRAGMENT, _selfSlot, [_selfBindTex nvview])) nvlog("self-bind guard: own-view bind FAILED");
++            _selfOwnBound = YES; _selfSynced = NO;   // the shadow stops following the draws
++        }
++        nvtrace("SELFFETCH surf %u barrier before draw", _selfSurf->_surf ? (unsigned)IOSurfaceGetID(_selfSurf->_surf) : 0u);
++        return YES;
++    }
++    if (_selfOwnBound) {   // back to the copy path: the slot samples the shadow again
++        if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_FRAGMENT, _selfSlot, _selfSurf->_selfShadow.view)) nvlog("self-bind guard: shadow re-bind FAILED");
++        _selfOwnBound = NO; _selfSynced = NO;
++    }
+     if (_begun && _cb->_c.in_rp) {
++        nvk_image *live = [self nvmtlLiveImageOf:_selfSurf];
++        const BOOL part = _selfSynced && live == _selfSyncImg && !_selfDirtyAll;
++        if (part && !_selfDirtyN) { [self nvmtlSelfNoteDraw]; return YES; }
+         const BOOL visWas = (_visActive || _visPending); const NSUInteger visOff = _visOffset;
+         [self nvmtlCloseVisibility];
+         nvmtl_vk_cmd_end_render(&_cb->_c);
+-        if (nvmtl_vk_cmd_selfsnapshot(&_cb->_c, [self nvmtlLiveImageOf:_selfSurf], &_selfSurf->_selfShadow)) {
+-            nvlog("self-bind guard: snapshot FAILED (the draw samples a stale shadow)"); }
++        if (nvmtl_vk_cmd_selfsnapshot_rects(&_cb->_c, live, &_selfSurf->_selfShadow, (const uint32_t (*)[4])_selfDirty, part ? _selfDirtyN : 0)) {
++            nvlog("self-bind guard: snapshot FAILED (the draw samples a stale shadow)"); _selfSynced = NO; }
++        else { _selfSynced = YES; _selfSyncImg = live; }
++        _selfDirtyN = 0; _selfDirtyAll = NO;
+         // The restart must LOAD what the first half of the encoder drew: the original action (Clear/DontCare) would wipe
+         // it. NVMTL_LOAD_ALL is masked down to the attachments the pipeline actually draws (nvmtl_rp_variant).
+         if (![self nvmtlBeginPassLoad:(_load | NVMTL_LOAD_ALL)]) { nvlog("self-bind guard: pass restart FAILED - encoder refused"); _refused = YES; return NO; }
+@@ -3060,7 +3120,9 @@
+         [self nvmtlApplyDepthStencil];
+         if (visWas) [self setVisibilityResultMode:MTLVisibilityResultModeCounting offset:visOff];
+         nvtrace("SELFREFRESH surf %u before draw", _selfSurf->_surf ? (unsigned)IOSurfaceGetID(_selfSurf->_surf) : 0u);
++        [self nvmtlSelfNoteDraw];
+     } else if (!_cb->_c.in_rp) {
++        _selfSynced = NO;   // the pass has not begun: its load action (a clear) still rewrites the whole attachment
+         [self nvmtlRshPrime];   // the snapshot reads the render shadow: fill it from the surface first
+         if (nvmtl_vk_cmd_selfsnapshot(&_cb->_c, [self nvmtlLiveImageOf:_selfSurf], &_selfSurf->_selfShadow)) {
+             nvlog("self-bind guard: snapshot FAILED (no pass open)"); return NO; }
+@@ -3149,6 +3211,7 @@
+                 cpib:(id<MTLBuffer>)cpib cpibOff:(NSUInteger)cpibOff indexed:(BOOL)indexed instances:(NSUInteger)instances
+                 base:(NSUInteger)base indirect:(id<MTLBuffer>)ind indOff:(NSUInteger)indOff {
+     if (!_begun) { nvlog("encoder: patch draw with no pipeline set"); return; }
++    _selfSynced = NO;   // patch draws skip the self-bind refresh: their writes are not tracked
+     if (!_ps || !_ps->_p.tess) { nvlog("tess draw: the pipeline (%s) has no post-tessellation vertex function — NOT drawn", _ps ? _ps->_vname.UTF8String : "-"); return; }
+     if (n != _ps->_p.tess_n) { nvlog("tess draw: %lu control points per patch, %s takes %u — NOT drawn", (unsigned long)n, _ps->_vname.UTF8String ?: "?", _ps->_p.tess_n); return; }
+     if (!_tfb) { nvlog("tess draw: no tessellation factor buffer is set — NOT drawn"); return; }
+--- a/plugin/NVMTLObjects.h
++++ b/plugin/NVMTLObjects.h
+@@ -204,6 +204,8 @@
+   NSMutableArray *_visRecords;
+   nvk_pass _pass; nvk_rtsig _passSig; BOOL _hasRef, _refused;
+   NVMTLTexture *_selfSurf; uint32_t _selfSlot; BOOL _selfMark;   // same-pass feedback-loop guard: slot samples the target
++  NVMTLTexture *_selfBindTex; BOOL _selfOwnBound;   // the texture the app bound; YES while the slot holds it, not the shadow
++  BOOL _selfSynced, _selfDirtyAll; nvk_image *_selfSyncImg; uint32_t _selfDirtyN, _selfDirty[8][4];   // what was drawn since the last snapshot
+   NVMTLTexture *_rshRoot[NVMTL_NCOL]; nvk_image *_rshLin[NVMTL_NCOL]; void *_rshLinView[NVMTL_NCOL];   // tiled render shadow per colour slot
+   uint8_t _rshIn[NVMTL_NCOL]; BOOL _rshAny, _rshPrimed;
+ } @end
+--- a/plugin/nvmtl_vk.c
++++ b/plugin/nvmtl_vk.c
+@@ -5719,17 +5719,29 @@
+ 
+ int nvmtl_vk_cmd_selfsnapshot(nvk_cmdbuf *c, nvk_image *att, nvk_image *shadow)
+ {
+-    if (!c || !att || !shadow || !shadow->img || c->in_rp) return -1;
++    return nvmtl_vk_cmd_selfsnapshot_rects(c, att, shadow, NULL, 0);
++}
++// Same copy restricted to rects (x, y, w, h in attachment pixels, clamped by the caller, non-overlapping); n == 0 copies
++// the whole image. The shadow keeps what earlier snapshots put there (its layout moves from SHADER_READ_ONLY, never from
++// UNDEFINED), so copying only what was drawn since the last snapshot gives the same shadow as a whole-image copy.
++int nvmtl_vk_cmd_selfsnapshot_rects(nvk_cmdbuf *c, nvk_image *att, nvk_image *shadow, const uint32_t (*rects)[4], unsigned n)
++{
++    if (!c || !att || !shadow || !shadow->img || c->in_rp || n > 16) return -1;
+     if (att->w != shadow->w || att->h != shadow->h || att->fmt != shadow->fmt) return -1;
+     const VkImageLayout back = (VkImageLayout)att->layout;
+     img_to(c, att, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+     img_to(c, shadow, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+-    VkImageCopy r = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+-                      { 0, 0, 0 }, { att->w, att->h, 1 } };
+-    pvkCmdCopyImage(c->cb, (VkImage)att->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, (VkImage)shadow->img,
+-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
++    VkImageCopy r[16]; unsigned nr = 0;
++    for (unsigned i = 0; i < (n ? n : 1u); i++) {
++        const uint32_t x = n ? rects[i][0] : 0, y = n ? rects[i][1] : 0, w = n ? rects[i][2] : att->w, h = n ? rects[i][3] : att->h;
++        if (!w || !h || x >= att->w || y >= att->h || w > att->w - x || h > att->h - y) continue;
++        r[nr++] = (VkImageCopy){ { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { (int32_t)x, (int32_t)y, 0 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++                                 { (int32_t)x, (int32_t)y, 0 }, { w, h, 1 } };
++    }
++    if (nr) pvkCmdCopyImage(c->cb, (VkImage)att->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, (VkImage)shadow->img,
++                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, nr, r);
+     img_to(c, shadow, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+     img_to(c, att, back, VK_ACCESS_TRANSFER_READ_BIT,
+--- a/plugin/nvmtl_vk.h
++++ b/plugin/nvmtl_vk.h
+@@ -236,6 +236,7 @@
+ // when the pass binds the surface it renders into (the caller ends and restarts the render pass around the copy).
+ int  nvmtl_vk_selfshadow_create(const nvk_image *att, nvk_image *out);
+ int  nvmtl_vk_cmd_selfsnapshot(nvk_cmdbuf *c, nvk_image *att, nvk_image *shadow);
++int  nvmtl_vk_cmd_selfsnapshot_rects(nvk_cmdbuf *c, nvk_image *att, nvk_image *shadow, const uint32_t (*rects)[4], unsigned n);
+ // Tiled render shadow of a shared-VRAM render target (see nvmtl_vk.c)
+ int  nvmtl_vk_rsh_on(void);
+ int  nvmtl_vk_rsh_create(const nvk_image *lin, nvk_image *out);

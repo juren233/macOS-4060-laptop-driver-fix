@@ -1,0 +1,477 @@
+--- nvmtl_vk.c.pre-tiledrt	2026-10-11 18:41:20
++++ nvmtl_vk.c	2026-10-11 18:41:42
+@@ -5735,6 +5735,56 @@
+     img_to(c, att, back, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
++    return 0;
++}
++
++// Tiled render shadow of a shared-VRAM (linear) surface. Ada draws into pitch-linear images several times slower than
++// into its own tiled layout (Chrome's window composite: ~1 ms per Graphite pass on a 3038x1802 linear target, ten
++// passes a frame, ~13 ms; the same frame on a private tiled target ~1.6 ms), so a render encoder draws such a surface
++// into a private tiled image of the same size instead and the two are copied VRAM to VRAM around the encoder:
++// linear -> shadow before the first pass (unless the attachment is cleared), shadow -> linear at endEncoding.
++// Both copies are whole-image and carry full ALL_COMMANDS barriers (no layout-equality shortcut like img_to's: the
++// copy must also order against earlier passes and copies of the same images). Leaves both in TRANSFER_SRC_OPTIMAL,
++// the layout this file keeps colour attachments in between passes.
++int nvmtl_vk_rsh_on(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("NVMTL_TILED_RT"); const char *pn = getprogname();
++        const int ws = pn && !strcmp(pn, "WindowServer");
++        on = e && *e ? atoi(e) : 1;               // 0 off, 1 apps (not WindowServer), 2 every process
++        if (on == 1 && ws) on = 0;
++        syslog(LOG_ERR, "NullMoth-diag: tiled render shadow for shared-VRAM render targets %s in %s (NVMTL_TILED_RT=%s)",
++               on ? "ON" : "off", pn ? pn : "?", e ? e : "unset");
++    }
++    return on;
++}
++int nvmtl_vk_rsh_create(const nvk_image *lin, nvk_image *out)
++{
++    if (!lin || !lin->img || !lin->w || !lin->h || lin->samples > 1) return -1;
++    return nvmtl_vk_image_create_typed(lin->w, lin->h, lin->fmt, lin->bpp, 0, 1, 0, 2, 1, out);
++}
++int nvmtl_vk_cmd_rsh_copy(nvk_cmdbuf *c, nvk_image *from, nvk_image *to)
++{
++    if (!c || !from || !to || !from->img || !to->img || c->in_rp) return -1;
++    if (from->w != to->w || from->h != to->h || from->fmt != to->fmt) return -1;
++    const VkImageSubresourceRange r = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
++    VkImageMemoryBarrier pre[2] = {
++        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
++          (VkImageLayout)from->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)from->img, r },
++        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
++          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)to->img, r } };
++    pvkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2, pre);
++    from->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++    VkImageCopy ic = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { to->w, to->h, 1 } };
++    pvkCmdCopyImage(c->cb, (VkImage)from->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, (VkImage)to->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
++    VkImageMemoryBarrier post[2] = {
++        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)to->img, r },
++        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)from->img, r } };
++    pvkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 2, post);
++    to->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+     return 0;
+ }
+ 
+--- nvmtl_vk.h.pre-tiledrt	2026-10-11 18:41:20
++++ nvmtl_vk.h	2026-10-11 18:41:45
+@@ -236,6 +236,10 @@
+ // when the pass binds the surface it renders into (the caller ends and restarts the render pass around the copy).
+ int  nvmtl_vk_selfshadow_create(const nvk_image *att, nvk_image *out);
+ int  nvmtl_vk_cmd_selfsnapshot(nvk_cmdbuf *c, nvk_image *att, nvk_image *shadow);
++// Tiled render shadow of a shared-VRAM render target (see nvmtl_vk.c)
++int  nvmtl_vk_rsh_on(void);
++int  nvmtl_vk_rsh_create(const nvk_image *lin, nvk_image *out);
++int  nvmtl_vk_cmd_rsh_copy(nvk_cmdbuf *c, nvk_image *from, nvk_image *to);
+ void nvmtl_vk_cmd_set_stencil(nvk_cmdbuf *c, int enable, const uint32_t *front6, const uint32_t *back6);
+ int  nvmtl_vk_cmd_retire_view(nvk_cmdbuf *c, void *view);
+ int  nvmtl_vk_cmd_attachment_view(nvk_cmdbuf *c, nvk_image *img, int depth, uint32_t level, uint32_t slice, void **out, uint32_t *w, uint32_t *h);
+--- NVMTLObjects.h.pre-tiledrt	2026-10-11 18:41:20
++++ NVMTLObjects.h	2026-10-11 18:44:47
+@@ -46,6 +46,7 @@
+   uint32_t _surfSeed, _surfGen; BOOL _surfSynced, _surfOwned;
+   nvk_buffer _vramBuf; BOOL _vramOn;
+   nvk_image _selfShadow; BOOL _selfShadowOn;   // same-pass feedback-loop guard: private copy of a shared attachment
++  nvk_image _rsh; BOOL _rshOn;   // tiled render shadow: render encoders draw a shared-VRAM (linear) surface here
+   BOOL _stex;
+   uint64_t _resid;
+   NSUInteger _usage;
+@@ -112,6 +113,7 @@
+   @public nvk_cmdbuf _c; NVMTLCommandQueue *_queue; BOOL _committed; BOOL _capacityHeld; MTLCommandBufferStatus _cbstatus;
+   NVMTLTexture *_present;
+   NSMutableArray *_presentations;
++  NSMutableArray *_rshPend;   // tiled render shadow: roots whose shadow holds pixels the surface does not have yet
+   NSMutableArray *_handlers;
+   NSMutableArray *_scratch;
+   NSMutableSet *_resources;
+@@ -202,6 +204,8 @@
+   NSMutableArray *_visRecords;
+   nvk_pass _pass; nvk_rtsig _passSig; BOOL _hasRef, _refused;
+   NVMTLTexture *_selfSurf; uint32_t _selfSlot; BOOL _selfMark;   // same-pass feedback-loop guard: slot samples the target
++  NVMTLTexture *_rshRoot[NVMTL_NCOL]; nvk_image *_rshLin[NVMTL_NCOL]; void *_rshLinView[NVMTL_NCOL];   // tiled render shadow per colour slot
++  uint8_t _rshIn[NVMTL_NCOL]; BOOL _rshAny, _rshPrimed;
+ } @end
+ @interface NVMTLRenderCommandEncoder ()
+ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d;
+--- NVMTLObjects.m.pre-tiledrt	2026-10-11 18:41:20
++++ NVMTLObjects.m	2026-10-11 19:00:54
+@@ -1061,6 +1061,7 @@
+     if (!_parent) nvmtl_vk_image_destroy(&_i);
+     if (!_parent && _vramOn) { nvmtl_vk_buffer_destroy(&_vramBuf); _vramOn = NO; }
+     if (!_parent && _selfShadowOn) { nvmtl_vk_image_destroy(&_selfShadow); _selfShadowOn = NO; }
++    if (!_parent && _rshOn) { nvmtl_vk_image_destroy(&_rsh); _rshOn = NO; }
+     if (!_parent && _surfImp.buf) { nvmtl_vk_buffer_destroy(&_surfImp); atomic_fetch_sub(&gSurfImpBytes, _surfImpLen); _surfImpLen = 0; }
+     if (_useHeld && _surf) { IOSurfaceDecrementUseCount(_surf); _useHeld = NO; atomic_fetch_sub(&gSurfUseHeld, 1); }
+     if (_surfOwned && _surf) CFRelease(_surf);
+@@ -2587,7 +2588,32 @@
+     [_cb nvmtlRecordEncodingError:[NSError errorWithDomain:MTLCommandBufferErrorDomain
+         code:MTLCommandBufferErrorInternal userInfo:@{NSLocalizedDescriptionKey:message}]];
+     return NO;
++}
++// Tiled render shadow: copy pending shadows back into their surfaces (the command buffer is between encoders, so no
++// render pass is open). flush_one: just this root; flush_all: every pending root except those in `keep`.
++static void nvmtl_rsh_flush_one(NVMTLCommandBuffer *cb, NVMTLTexture *root) {
++    if (!cb || !root || !cb->_rshPend.count || ![cb->_rshPend containsObject:root]) return;
++    if (!root->_rshOn || nvmtl_vk_cmd_rsh_copy(&cb->_c, &root->_rsh, &root->_i)) {
++        static int said; if (said++ < 4) nvlog("tiled render shadow: shadow -> surface copy FAILED - the surface misses the shadow's pixels"); }
++    if (!cb->_resources) cb->_resources = [NVMTLResSet new];
++    [cb->_resources addObject:root];
++    [cb->_rshPend removeObjectIdenticalTo:root];
++}
++// Another texture object on the same IOSurface aliases the same VRAM: its pending shadow must reach the surface before
++// this one is drawn or read. Returns such a pending root (the first), NULL if none.
++static NVMTLTexture *nvmtl_rsh_alias_of(NVMTLCommandBuffer *cb, NVMTLTexture *root) {
++    if (!cb || !root || !root->_surf || !cb->_rshPend.count) return nil;
++    for (NVMTLTexture *r in cb->_rshPend) if (r != root && r->_surf == root->_surf && r->_plane == root->_plane) return r;
++    return nil;
+ }
++static void nvmtl_rsh_flush_alias(NVMTLCommandBuffer *cb, NVMTLTexture *root) {
++    for (NVMTLTexture *r; (r = nvmtl_rsh_alias_of(cb, root)); ) nvmtl_rsh_flush_one(cb, r);
++}
++static void nvmtl_rsh_flush_all(NVMTLCommandBuffer *cb, NSArray *keep) {
++    if (!cb || !cb->_rshPend.count) return;
++    for (NVMTLTexture *root in [cb->_rshPend copy])
++        if (!keep || [keep indexOfObjectIdenticalTo:root] == NSNotFound) nvmtl_rsh_flush_one(cb, root);
++}
+ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d {
+     NVMTLCommandBuffer *cb = _cb;
+     memset(&_pass, 0, sizeof _pass); cb->_c.depth_view = NULL;
+@@ -2620,6 +2646,7 @@
+         if (!tx) continue;
+         if (![(id)tx isKindOfClass:[NVMTLTexture class]]) { nvlog("encoder: apps2 colour %u is a %s, not our texture — pass REFUSED", i, object_getClassName(tx)); return NO; }
+         NVMTLTexture *t = (NVMTLTexture *)tx; uint32_t cw = 0, ch = 0;
++        nvmtl_rsh_flush_alias(cb, t->_parent ? t->_parent : t);
+         uint32_t zslice = [t nvi]->mtl_type == 7 ? (uint32_t)ca.depthPlane : (uint32_t)ca.slice;
+         if (ca.depthPlane && [t nvi]->mtl_type != 7) { static int said;
+             if (said++ < 4) nvlog("encoder: apps2 colour %u sets depthPlane %lu on a texture of type %u, which is not 3D — depthPlane IGNORED, its slice %lu is used", i, (unsigned long)ca.depthPlane, [t nvi]->mtl_type, (unsigned long)ca.slice); }
+@@ -2628,6 +2655,25 @@
+         _pass.col[i] = [t nvi]; _pass.colw[i] = cw; _pass.colh[i] = ch;
+         _pass.col_level[i] = t->_baseLevel + (uint32_t)ca.level; _pass.col_layer[i] = t->_baseSlice + zslice;
+         _pass.colfmt[i] = tvk;
++        { // Tiled render shadow: a whole single-sample shared-VRAM surface, attached in its own format, is drawn into a
++          // private tiled image of it (nvmtl_vk_cmd_rsh_copy in nvmtl_vk.c says why); restored at endEncoding.
++          NVMTLTexture *rr = t->_parent ? t->_parent : t; nvk_image *li = [rr nvi];
++          if (nvmtl_vk_rsh_on() && rr->_vramOn && li->samples <= 1 && li->mips <= 1 && (li->layers ? li->layers : 1) == 1 && NL == 1
++              && li->mtl_type == 2 && _pass.col_level[i] == 0 && _pass.col_layer[i] == 0 && tvk == li->fmt && !ta8 && cw == li->w && ch == li->h) {
++              if (!rr->_rshOn) {
++                  if (nvmtl_vk_rsh_create(li, &rr->_rsh)) { static int said; if (said++ < 4) nvlog("tiled render shadow: create FAILED for %ux%u - drawing the linear surface", li->w, li->h); }
++                  else { rr->_rshOn = YES; static unsigned n; if (n++ < 8) nvlog("tiled render shadow: surf %u %ux%u gets a tiled render image",
++                      rr->_surf ? (unsigned)IOSurfaceGetID(rr->_surf) : 0u, li->w, li->h); } }
++              void *sv = NULL; uint32_t sw = 0, sh = 0;
++              if (rr->_rshOn && !nvmtl_vk_cmd_attachment_view_n(&cb->_c, &rr->_rsh, 0, 0, 0, 1, tvk, ta8, &sv, &sw, &sh) && sw == cw && sh == ch) {
++                  _rshRoot[i] = rr; _rshLin[i] = li; _rshLinView[i] = _pass.colview[i];
++                  // Load and DontCare keep what the surface holds - unless the shadow is already the newest copy
++                  _rshIn[i] = ca.loadAction != MTLLoadActionClear && ![cb->_rshPend containsObject:rr];
++                  _pass.col[i] = &rr->_rsh; _pass.colview[i] = sv; _rshAny = YES;
++              }
++          }
++        }
++        if (!_rshRoot[i]) nvmtl_rsh_flush_one(cb, t->_parent ? t->_parent : t);   // drawn without the shadow: surface first
+         MTLClearColor cc = ca.clearColor;
+         _pass.clear[i][0] = (float)cc.red; _pass.clear[i][1] = (float)cc.green; _pass.clear[i][2] = (float)cc.blue; _pass.clear[i][3] = (float)cc.alpha;
+         if (nvmtl_load_keeps(ca.loadAction)) load |= NVMTL_LOAD_COLOUR(i);
+@@ -2646,6 +2692,8 @@
+         if ((sa == MTLStoreActionMultisampleResolve || sa == MTLStoreActionStoreAndMultisampleResolve || sa == MTLStoreActionUnknown) && rx) {
+             if (![(id)rx isKindOfClass:[NVMTLTexture class]]) { nvlog("encoder: apps2 resolve %u is a %s, not our texture — pass REFUSED", i, object_getClassName(rx)); return NO; }
+             NVMTLTexture *r = (NVMTLTexture *)rx; uint32_t rw = 0, rh = 0;
++            nvmtl_rsh_flush_one(cb, r->_parent ? r->_parent : r);   // a resolve writes the surface itself
++            nvmtl_rsh_flush_alias(cb, r->_parent ? r->_parent : r);
+             int ra8 = 0; uint32_t rvk = nvmtl_tex_attach_vkfmt(r, &ra8);
+             if (nvmtl_vk_cmd_attachment_view_n(&cb->_c, [r nvi], 0, r->_baseLevel + (uint32_t)ca.resolveLevel, r->_baseSlice + (uint32_t)ca.resolveSlice, NL, rvk, ra8, &_pass.resview[i], &rw, &rh)) return NO;
+             _pass.res[i] = [r nvi]; _pass.resw[i] = rw; _pass.resh[i] = rh;
+@@ -2660,6 +2708,8 @@
+         if (da.texture && sa.texture && da.texture != sa.texture) { static int said; if (!said++) nvlog("encoder: apps2 separate depth and stencil textures — the stencil texture is NOT attached (one depth/stencil attachment)"); }
+         MTLRenderPassAttachmentDescriptor *which = da.texture ? (MTLRenderPassAttachmentDescriptor *)da : (MTLRenderPassAttachmentDescriptor *)sa;
+         NVMTLTexture *dt = (NVMTLTexture *)dtx; uint32_t dw = 0, dh = 0;
++        nvmtl_rsh_flush_one(cb, dt->_parent ? dt->_parent : dt);
++        nvmtl_rsh_flush_alias(cb, dt->_parent ? dt->_parent : dt);
+         if (nvmtl_vk_cmd_attachment_view_n(&cb->_c, [dt nvi], 1, dt->_baseLevel + (uint32_t)which.level, dt->_baseSlice + (uint32_t)which.slice, NL, 0, 0, &_pass.dsview, &dw, &dh)) return NO;
+         {
+             MTLStoreAction dsa = da.storeAction, ssa = sa.storeAction;
+@@ -2668,6 +2718,8 @@
+             id<MTLTexture> drx = dr ? da.resolveTexture : sr ? sa.resolveTexture : nil;
+             if (drx && [(id)drx isKindOfClass:[NVMTLTexture class]]) {
+                 NVMTLTexture *r = (NVMTLTexture *)drx; uint32_t rw = 0, rh = 0;
++                nvmtl_rsh_flush_one(cb, r->_parent ? r->_parent : r);
++                nvmtl_rsh_flush_alias(cb, r->_parent ? r->_parent : r);
+                 MTLRenderPassAttachmentDescriptor *rw_ = dr ? (MTLRenderPassAttachmentDescriptor *)da : (MTLRenderPassAttachmentDescriptor *)sa;
+                 if (nvmtl_vk_cmd_attachment_view_n(&cb->_c, [r nvi], 1, r->_baseLevel + (uint32_t)rw_.resolveLevel, r->_baseSlice + (uint32_t)rw_.resolveSlice, NL, 0, 0, &_pass.dresview, &rw, &rh)) return NO;
+                 _pass.dres = [r nvi];
+@@ -2709,8 +2761,90 @@
+     cb->_c.depth_view = _pass.dsview;
+     return YES;
+ }
++// Tiled render shadow: before the encoder's first pass, bring the shadows of attachments that are not cleared (and
++// not already pending in this command buffer) up to date with their surface. At endEncoding the shadow becomes PENDING
++// on the command buffer: consecutive render encoders on the same surface keep drawing into it with no copies, and
++// nvmtl_rsh_flush copies it back before anything else could see the surface (any other encoder, an event signal, the
++// commit). The self-bind guard's restarts reuse the primed shadow, so priming happens once per encoder.
++- (void)nvmtlRshPrime {
++    if (!_rshAny || _rshPrimed) return;
++    _rshPrimed = YES;
++    for (uint32_t i = 0; i < NVMTL_NCOL; i++)
++        if (_rshRoot[i] && _rshIn[i] && nvmtl_vk_cmd_rsh_copy(&_cb->_c, _rshLin[i], &_rshRoot[i]->_rsh)) {
++            static int said; if (said++ < 4) nvlog("tiled render shadow: surface -> shadow copy FAILED (colour %u)", i); }
++}
++- (void)nvmtlRshFlush {
++    if (!_rshAny) return;
++    if (_rshPrimed) {
++        if (!_cb->_rshPend) _cb->_rshPend = [NSMutableArray new];
++        for (uint32_t i = 0; i < NVMTL_NCOL; i++)
++            if (_rshRoot[i] && ![_cb->_rshPend containsObject:_rshRoot[i]]) [_cb->_rshPend addObject:_rshRoot[i]];
++    }
++    _rshAny = NO;
++}
++// A pass that never began (no draws: clear-only / empty pass) runs on the surface itself, as before the shadow.
++- (void)nvmtlRshUndo {
++    if (!_rshAny || _rshPrimed) return;
++    // A shadow still pending from an earlier encoder of this command buffer goes back first: the clear / empty pass
++    // below then lands on the newest pixels, and nothing stays pending that is older than the surface.
++    for (uint32_t i = 0; i < NVMTL_NCOL; i++)
++        if (_rshRoot[i]) { nvmtl_rsh_flush_one(_cb, _rshRoot[i]); _pass.col[i] = _rshLin[i]; _pass.colview[i] = _rshLinView[i]; _rshRoot[i] = nil; }
++    _rshAny = NO;
++}
++// Tiled render shadow, sampling side. Between encoders of one command buffer a surface's newest pixels can sit in its
++// shadow (pending) instead of the surface, so a render encoder that samples the surface directly gets the shadow bound
++// in its place: Chrome's Graphite frame alternates window passes with filter passes that read the window, and binding
++// the shadow keeps all of them copy-free. Returns the view to bind, or NULL to bind the texture as usual (after
++// nvmtlRshMakeCurrent made the surface current where a shadow is involved but cannot stand in for the texture).
++- (BOOL)nvmtlRshOwns:(NVMTLTexture *)root {
++    for (uint32_t i = 0; _rshAny && i < NVMTL_NCOL; i++) if (_rshRoot[i] == root) return YES;
++    return NO;
++}
++- (void *)nvmtlRshSampleView:(NVMTLTexture *)nt {
++    NVMTLTexture *root = nt->_parent ? nt->_parent : nt;
++    for (NVMTLTexture *al; (al = nvmtl_rsh_alias_of(_cb, root)); ) [self nvmtlRshMakeCurrent:al];
++    for (uint32_t i = 0; _rshAny && i < NVMTL_NCOL; i++)   // ...and so is this encoder's own attachment on the same surface
++        if (_rshRoot[i] && _rshRoot[i] != root && root->_surf && _rshRoot[i]->_surf == root->_surf) [self nvmtlRshMakeCurrent:_rshRoot[i]];
++    if (!root->_rshOn) return NULL;
++    const BOOL mine = [self nvmtlRshOwns:root], pend = !mine && _cb->_rshPend.count && [_cb->_rshPend containsObject:root];
++    if (!mine && !pend) return NULL;
++    if (!nt->_parent && !nt->_stex && !nt->_tbView && [nt nvview] == root->_i.view) {
++        if (mine) [self nvmtlRshPrime];   // sampled before this encoder's first draw: the shadow must hold the surface
++        return root->_rsh.view; }
++    [self nvmtlRshMakeCurrent:root];
++    return NULL;
++}
++// Copy a shadow back mid-encoder: close the pass, copy, restart it loading everything (as the self-bind guard does).
++- (void)nvmtlRshMakeCurrent:(NVMTLTexture *)root {
++    const BOOL mine = [self nvmtlRshOwns:root];
++    if (!mine && !(_cb->_rshPend.count && [_cb->_rshPend containsObject:root])) return;
++    { static int said; if (said++ < 8) nvlog("tiled render shadow: surf %u is read in a way the shadow cannot stand in for - copied back first",
++                                             root->_surf ? (unsigned)IOSurfaceGetID(root->_surf) : 0u); }
++    const BOOL open = _begun && _cb->_c.in_rp;
++    const BOOL visWas = (_visActive || _visPending); const NSUInteger visOff = _visOffset;
++    if (open) { [self nvmtlCloseVisibility]; nvmtl_vk_cmd_end_render(&_cb->_c); }
++    if (mine) {
++        // the pending copy of an earlier encoder (if any) is older than what this encoder drew - drop it, write ours
++        const BOOL wasPend = _cb->_rshPend.count && [_cb->_rshPend containsObject:root];
++        if (wasPend) [_cb->_rshPend removeObjectIdenticalTo:root];
++        if ((_rshPrimed || wasPend) && nvmtl_vk_cmd_rsh_copy(&_cb->_c, &root->_rsh, &root->_i)) nvlog("tiled render shadow: mid-encoder copy-back FAILED");
++    } else nvmtl_rsh_flush_one(_cb, root);
++    if (open) {
++        if (![self nvmtlBeginPassLoad:(_load | NVMTL_LOAD_ALL)]) { nvlog("tiled render shadow: pass restart FAILED - encoder refused"); _refused = YES; return; }
++        nvmtl_vk_cmd_set_cull(&_cb->_c, _cull);
++        if (_hasVP) nvmtl_vk_cmd_set_viewport(&_cb->_c, _vp[0], _vp[1], _vp[2], _vp[3], _vp[4], _vp[5]);
++        if (_hasSC) nvmtl_vk_cmd_set_scissor(&_cb->_c, (int32_t)_sc[0], (int32_t)_sc[1], _sc[2], _sc[3]);
++        [self nvmtlApplyDepthStencil];
++        if (visWas) [self setVisibilityResultMode:MTLVisibilityResultModeCounting offset:visOff];
++    }
++}
++- (nvk_image *)nvmtlLiveImageOf:(NVMTLTexture *)sr {
++    for (uint32_t i = 0; _rshAny && i < NVMTL_NCOL; i++) if (_rshRoot[i] == sr) return &sr->_rsh;
++    return [sr nvi];
++}
+ - (BOOL)nvmtlBeginPassLoad:(uint32_t)load {
+     if (_refused || !_ps) return NO;
++    [self nvmtlRshPrime];
+     uint32_t keep = _pass.load; _pass.load = load;
+     int rc = nvmtl_vk_cmd_begin_pass(&_cb->_c, &_pass, &_ps->_p);
+     _pass.load = keep;
+@@ -2754,6 +2888,7 @@
+     nvmtl_retain_resource(_cb, p);
+     if (!_begun) {
+         if (_refused) return;
++        [self nvmtlRshPrime];
+         if (nvmtl_vk_cmd_begin_pass(&_cb->_c, &_pass, &p->_p)) {
+             nvlog("encoder: begin render FAILED — nothing is recorded for this pipeline");
+             if (_pass.sample_pattern.count) [self nvmtlSamplePositionError:@"sample positions: cannot begin requested render pass"];
+@@ -2849,6 +2984,9 @@
+     if (!nt) { nvlog("setVertexTexture: nil at index %lu", (unsigned long)i); return; }
+     nvmtl_retain_resource(_cb, nt);
+     [nt nvmtlSurfaceIn];
++    { void *rshView = [self nvmtlRshSampleView:nt];
++      if (rshView) { if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, rshView)) nvlog("setVertexTexture: render-shadow bind FAILED");
++          nvmtl_vk_bind_storage_view(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, NULL); return; } }
+     if (nt->_tbView) nvmtl_vk_bind_texel_view(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, nt->_tbView, nt->_tbStorage);
+     else {
+     if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, [nt nvview])) nvlog("setVertexTexture: bind FAILED");
+@@ -2911,7 +3049,7 @@
+         const BOOL visWas = (_visActive || _visPending); const NSUInteger visOff = _visOffset;
+         [self nvmtlCloseVisibility];
+         nvmtl_vk_cmd_end_render(&_cb->_c);
+-        if (nvmtl_vk_cmd_selfsnapshot(&_cb->_c, [_selfSurf nvi], &_selfSurf->_selfShadow)) {
++        if (nvmtl_vk_cmd_selfsnapshot(&_cb->_c, [self nvmtlLiveImageOf:_selfSurf], &_selfSurf->_selfShadow)) {
+             nvlog("self-bind guard: snapshot FAILED (the draw samples a stale shadow)"); }
+         // The restart must LOAD what the first half of the encoder drew: the original action (Clear/DontCare) would wipe
+         // it. NVMTL_LOAD_ALL is masked down to the attachments the pipeline actually draws (nvmtl_rp_variant).
+@@ -2923,7 +3061,8 @@
+         if (visWas) [self setVisibilityResultMode:MTLVisibilityResultModeCounting offset:visOff];
+         nvtrace("SELFREFRESH surf %u before draw", _selfSurf->_surf ? (unsigned)IOSurfaceGetID(_selfSurf->_surf) : 0u);
+     } else if (!_cb->_c.in_rp) {
+-        if (nvmtl_vk_cmd_selfsnapshot(&_cb->_c, [_selfSurf nvi], &_selfSurf->_selfShadow)) {
++        [self nvmtlRshPrime];   // the snapshot reads the render shadow: fill it from the surface first
++        if (nvmtl_vk_cmd_selfsnapshot(&_cb->_c, [self nvmtlLiveImageOf:_selfSurf], &_selfSurf->_selfShadow)) {
+             nvlog("self-bind guard: snapshot FAILED (no pass open)"); return NO; }
+         nvtrace("SELFREFRESH surf %u taken before the pass begins", _selfSurf->_surf ? (unsigned)IOSurfaceGetID(_selfSurf->_surf) : 0u);
+     }
+@@ -2945,6 +3084,12 @@
+     if (shadowView) {
+         _selfSlot = (uint32_t)i;
+         if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, shadowView)) nvlog("setFragmentTexture: shadow bind FAILED");
++        nvmtl_vk_bind_storage_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, NULL);
++        return;
++    }
++    void *rshView = [self nvmtlRshSampleView:nt];
++    if (rshView) {
++        if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, rshView)) nvlog("setFragmentTexture: render-shadow bind FAILED");
+         nvmtl_vk_bind_storage_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, NULL);
+         return;
+     }
+@@ -3087,6 +3232,7 @@
+     _cb->_nEnd++;
+     [self nvmtlCloseVisibility];
+     if (_begun) nvmtl_vk_cmd_end_render(&_cb->_c);
++    if (_begun) [self nvmtlRshFlush]; else [self nvmtlRshUndo];
+     NSMutableDictionary *groups = [NSMutableDictionary new];
+     BOOL needScratch = NO;
+     for (NSArray *record in _visRecords) {
+@@ -3311,12 +3457,16 @@
+ - (void)setVertexSamplerStates:(const id<MTLSamplerState> __unsafe_unretained [])ss lodMinClamps:(const float *)lo lodMaxClamps:(const float *)hi withRange:(NSRange)r {
+     for(NSUInteger k=0;k<r.length;k++) [self setVertexSamplerState:ss[k] lodMinClamp:lo[k] lodMaxClamp:hi[k] atIndex:r.location+k];
+ }
+-- (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u { nvmtl_retain_resource(_cb, r); }
++- (void)nvmtlRshUse:(id)r {
++    if (![r isKindOfClass:[NVMTLTexture class]]) return;
++    NVMTLTexture *t = (NVMTLTexture *)r; [self nvmtlRshMakeCurrent:t->_parent ? t->_parent : t];
++}
++- (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u { nvmtl_retain_resource(_cb, r); [self nvmtlRshUse:r]; }
+ - (void)useHeaps:(const id<MTLHeap> __unsafe_unretained [])h count:(NSUInteger)n {}
+ - (void)useHeaps:(const id<MTLHeap> __unsafe_unretained [])h count:(NSUInteger)n stages:(MTLRenderStages)st { nvtrace("USEHEAPS %lu stages %lu", (unsigned long)n, (unsigned long)st); }
+-- (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u stages:(MTLRenderStages)st { nvmtl_retain_resource(_cb, r); nvtrace("USERES %s %p usage %lu stages %lu", object_getClassName(r), (__bridge void *)r, (unsigned long)u, (unsigned long)st); }
+-- (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u { for (NSUInteger i=0;i<n;i++) nvmtl_retain_resource(_cb,r[i]); }
+-- (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u stages:(MTLRenderStages)st { for (NSUInteger i=0;i<n;i++) nvmtl_retain_resource(_cb,r[i]); nvtrace("USERES x%lu usage %lu stages %lu", (unsigned long)n, (unsigned long)u, (unsigned long)st); }
++- (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u stages:(MTLRenderStages)st { nvmtl_retain_resource(_cb, r); [self nvmtlRshUse:r]; nvtrace("USERES %s %p usage %lu stages %lu", object_getClassName(r), (__bridge void *)r, (unsigned long)u, (unsigned long)st); }
++- (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u { for (NSUInteger i=0;i<n;i++) { nvmtl_retain_resource(_cb,r[i]); [self nvmtlRshUse:r[i]]; } }
++- (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u stages:(MTLRenderStages)st { for (NSUInteger i=0;i<n;i++) { nvmtl_retain_resource(_cb,r[i]); [self nvmtlRshUse:r[i]]; } nvtrace("USERES x%lu usage %lu stages %lu", (unsigned long)n, (unsigned long)u, (unsigned long)st); }
+ - (void)useHeap:(id<MTLHeap>)h {}
+ - (void)useHeap:(id<MTLHeap>)h stages:(MTLRenderStages)st {}
+ - (void)sampleCountersInBuffer:(id)sb atSampleIndex:(NSUInteger)i withBarrier:(BOOL)b { nvmtl_sample_counter(_cb, sb, i, self, b); }
+@@ -4430,6 +4580,20 @@
+ static NSUInteger nvmtl_texture_slice_count(NVMTLTexture *t) {
+     MTLTextureType type = t.textureType;
+     return type == MTLTextureTypeCube ? 6 : type == MTLTextureTypeCubeArray ? t.arrayLength * 6 : t.arrayLength;
++}
++// Tiled render shadow, blit side. A blit that READS a surface whose newest pixels are in a pending shadow reads the
++// shadow (Graphite copies the backdrop of every filter out of the window texture - flushing there cost two whole-surface
++// copies per filter); a blit that WRITES the surface (or a CPU synchronize) first puts the shadow back.
++static nvk_image *nvmtl_rsh_blit_src(NVMTLCommandBuffer *cb, NVMTLTexture *t) {
++    NVMTLTexture *root = t->_parent ? t->_parent : t;
++    nvmtl_rsh_flush_alias(cb, root);
++    if (!cb->_rshPend.count || ![cb->_rshPend containsObject:root]) return [t nvi];
++    if (root->_rshOn && !t->_parent && !t->_baseLevel && !t->_baseSlice) return &root->_rsh;
++    nvmtl_rsh_flush_one(cb, root); return [t nvi];
++}
++static void nvmtl_rsh_blit_dst(NVMTLCommandBuffer *cb, NVMTLTexture *t) {
++    NVMTLTexture *root = t->_parent ? t->_parent : t;
++    nvmtl_rsh_flush_alias(cb, root); nvmtl_rsh_flush_one(cb, root);
+ }
+ @implementation NVMTLBlitCommandEncoder
+ - (unsigned long long)globalTraceObjectID { return nvmtl_global_trace_id(self); }
+@@ -4466,7 +4630,8 @@
+           (unsigned long)so.y, (unsigned long)size.width, (unsigned long)size.height, [d nvi]->w, [d nvi]->h, nvmtl_surf_id(d), (unsigned long)dof.x, (unsigned long)dof.y);
+       g_trace_mute = was; }
+     [s nvmtlSurfaceIn]; [d nvmtlSurfaceIn]; nvmtl_surf_dirty(_cb, d);
+-    if (nvmtl_vk_cmd_copy_image_sub(&_cb->_c, [s nvi], (uint32_t)sl + s->_baseLevel, (uint32_t)ss + s->_baseSlice, (uint32_t)so.x, (uint32_t)so.y,
++    nvmtl_rsh_blit_dst(_cb, d); nvk_image *simg = nvmtl_rsh_blit_src(_cb, s);
++    if (nvmtl_vk_cmd_copy_image_sub(&_cb->_c, simg, (uint32_t)sl + s->_baseLevel, (uint32_t)ss + s->_baseSlice, (uint32_t)so.x, (uint32_t)so.y,
+                                 [d nvi], (uint32_t)dl + d->_baseLevel, (uint32_t)ds + d->_baseSlice, (uint32_t)dof.x, (uint32_t)dof.y,
+                                 (uint32_t)size.width, (uint32_t)size.height))
+         nvlog("blit copyFromTexture: FAILED");
+@@ -4493,7 +4658,7 @@
+     if (!_cb->_resources) _cb->_resources = [NVMTLResSet new];
+     [_cb->_resources addObject:t];
+     { int was = nvtrace_scope([t nvi]->w, [t nvi]->h); nvtrace("MIPS tex %ux%u surf %u", [t nvi]->w, [t nvi]->h, nvmtl_surf_id(t)); g_trace_mute = was; }
+-    [t nvmtlSurfaceIn]; nvmtl_surf_dirty(_cb, t);
++    [t nvmtlSurfaceIn]; nvmtl_surf_dirty(_cb, t); nvmtl_rsh_blit_dst(_cb, t);
+     if (nvmtl_vk_cmd_image_gen_mipmaps(&_cb->_c, [t nvi])) nvlog("generateMipmapsForTexture: FAILED");
+ }
+ - (void)copyFromTexture:(id<MTLTexture>)src sourceSlice:(NSUInteger)ss sourceLevel:(NSUInteger)sl toTexture:(id<MTLTexture>)dst
+@@ -4556,8 +4721,8 @@
+     [t nvmtlSurfaceIn]; nvmtl_surf_dirty(_cb, t);
+     { BOOL vol = [t nvi]->mtl_type == 7; NSUInteger nz = vol ? (size.depth ? size.depth : 1) : 1; NSUInteger per = img ? img : row * size.height; int rc = 0;
+       for (NSUInteger zi = 0; zi < nz && !rc; zi++)
+-          rc = nvmtl_vk_cmd_copy_buffer_to_image_level_layer(&_cb->_c, &b->_b, so + zi * per, (uint32_t)row, [t nvi],
+-                                      (uint32_t)dof.x, (uint32_t)dof.y, (uint32_t)size.width, (uint32_t)size.height, (uint32_t)dl + t->_baseLevel, (uint32_t)(vol ? dof.z + zi : ds + t->_baseSlice));
++          rc = (nvmtl_rsh_blit_dst(_cb, t), nvmtl_vk_cmd_copy_buffer_to_image_level_layer(&_cb->_c, &b->_b, so + zi * per, (uint32_t)row, [t nvi],
++                                      (uint32_t)dof.x, (uint32_t)dof.y, (uint32_t)size.width, (uint32_t)size.height, (uint32_t)dl + t->_baseLevel, (uint32_t)(vol ? dof.z + zi : ds + t->_baseSlice)));
+       if (rc) nvlog("blit copyFromBuffer:toTexture: FAILED (level %lu slice %lu)", (unsigned long)dl, (unsigned long)ds); }
+ }
+ - (void)copyFromBuffer:(id<MTLBuffer>)src sourceOffset:(NSUInteger)so sourceBytesPerRow:(NSUInteger)row
+@@ -4592,7 +4757,7 @@
+       g_trace_mute = was; }
+     { BOOL vol = [t nvi]->mtl_type == 7; NSUInteger nz = vol ? (size.depth ? size.depth : 1) : 1; NSUInteger per = img ? img : row * size.height; int rc = 0;
+       for (NSUInteger zi = 0; zi < nz && !rc; zi++)
+-          rc = nvmtl_vk_cmd_copy_image_to_buffer_level_layer(&_cb->_c, [t nvi], (uint32_t)so.x, (uint32_t)so.y,
++          rc = nvmtl_vk_cmd_copy_image_to_buffer_level_layer(&_cb->_c, nvmtl_rsh_blit_src(_cb, t), (uint32_t)so.x, (uint32_t)so.y,
+                                       (uint32_t)size.width, (uint32_t)size.height, &b->_b, dof + zi * per, (uint32_t)row, (uint32_t)sl + t->_baseLevel, (uint32_t)(vol ? so.z + zi : ss + t->_baseSlice));
+       if (rc) nvlog("blit copyFromTexture:toBuffer: FAILED (level %lu slice %lu)", (unsigned long)sl, (unsigned long)ss); }
+ }
+@@ -4626,6 +4791,7 @@
+     }
+     if ([(id)r isKindOfClass:[NVMTLTexture class]]) {
+         NVMTLTexture *t = (NVMTLTexture *)r;
++        nvmtl_rsh_blit_dst(_cb, t);
+         NVMTLBuffer *bb = t->_backBuf ? t->_backBuf : (t->_parent ? t->_parent->_backBuf : nil);
+         if (bb && bb->_shadow.map) {
+             [_cb->_resources addObject:bb];
+@@ -4672,6 +4838,7 @@
+ }
+ - (id<MTLParallelRenderCommandEncoder>)parallelRenderCommandEncoderWithDescriptor:(MTLRenderPassDescriptor *)d {
+     nvmtl_g79_flush(self);
++    nvmtl_rsh_flush_all(self, nil);
+     NVMTLParallelRenderCommandEncoder *p = [NVMTLParallelRenderCommandEncoder new];
+     _nEnc++;
+     p->_cb = self; p->_desc = [d copy]; p->_subs = [NSMutableArray new]; p->_lock = [NSLock new];
+@@ -4776,7 +4943,7 @@
+ 
+ - (void)pushDebugGroup:(NSString *)g {}
+ - (void)popDebugGroup {}
+-- (void)encodeSignalEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordSignal:e value:v]; }
++- (void)encodeSignalEvent:(id<MTLEvent>)e value:(uint64_t)v { nvmtl_rsh_flush_all(self, nil); [self nvmtlRecordSignal:e value:v]; }
+ - (void)encodeWaitForEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordWait:e value:v]; }
+ // The display-pipe swap follows this call immediately in WindowServer. NVAccel
+ // cannot order that swap after an NVK fence, so wait for the pixels to finish
+@@ -4789,8 +4956,9 @@
+     if (ws) [self waitUntilCompleted]; else [self waitUntilScheduled];
+     return self.status != MTLCommandBufferStatusError;
+ }
+-- (void)commit { [self nvmtlSubmitWithEvents]; }
++- (void)commit { if (!_committed) nvmtl_rsh_flush_all(self, nil); [self nvmtlSubmitWithEvents]; }
+ - (id<MTLComputeCommandEncoder>)computeCommandEncoder {
++    nvmtl_rsh_flush_all(self, nil);
+     NVMTLComputeCommandEncoder *e = [NVMTLComputeCommandEncoder new]; e->_cb = self; _nEnc++; return e;
+ }
+ - (id<MTLComputeCommandEncoder>)computeCommandEncoderWithDispatchType:(MTLDispatchType)t {
+@@ -4807,6 +4975,7 @@
+ }
+ - (id<MTLAccelerationStructureCommandEncoder>)accelerationStructureCommandEncoder {
+     nvmtl_g79_flush(self);
++    nvmtl_rsh_flush_all(self, nil);
+     NVMTLAccelerationStructureCommandEncoder *e = [NVMTLAccelerationStructureCommandEncoder new]; e->_cb = self; _nEnc++; return e;
+ }
+ - (id<MTLAccelerationStructureCommandEncoder>)accelerationStructureCommandEncoderWithDescriptor:(MTLAccelerationStructurePassDescriptor *)d { return [self accelerationStructureCommandEncoder]; }

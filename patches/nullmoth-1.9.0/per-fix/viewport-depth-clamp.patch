@@ -1,0 +1,15 @@
+--- nvmtl_vk.c.pre-vpclamp	2026-10-09 15:32:41
++++ nvmtl_vk.c	2026-10-09 15:32:53
+@@ -4636,8 +4636,11 @@
+ }
+ int nvmtl_vk_cmd_begin_render(nvk_cmdbuf *c, nvk_image *img, nvk_pipeline *p, const float clear[4])
+ { return nvmtl_vk_cmd_begin_render_ex(c, img, p, clear, 0); }
++// Metal accepts any znear/zfar (Apple GPUs clamp depth to [0,1]); Vulkan requires [0,1] and NVK asserts on anything else
++// (UU Remote's video view sets an out-of-range depth range, which aborted the app on its first frame). NaN -> 0.
++static inline float nvmtl_vp_depth(float z) { return z >= 0.0f ? (z <= 1.0f ? z : 1.0f) : 0.0f; }
+ void nvmtl_vk_cmd_set_viewport(nvk_cmdbuf *c, float x, float y, float w, float h, float zn, float zf)
+-{ VkViewport vp = { x, y + h, w, -h, zn, zf }; pvkCmdSetViewport(c->cb, 0, 1, &vp); }
++{ VkViewport vp = { x, y + h, w, -h, nvmtl_vp_depth(zn), nvmtl_vp_depth(zf) }; pvkCmdSetViewport(c->cb, 0, 1, &vp); }
+ static void nvmtl_vk_zero_dummies(void)
+ {
+     static int done;

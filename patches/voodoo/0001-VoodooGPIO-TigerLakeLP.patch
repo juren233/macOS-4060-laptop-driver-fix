@@ -1,0 +1,64 @@
+diff --git a/VoodooGPIO.xcodeproj/project.pbxproj b/VoodooGPIO.xcodeproj/project.pbxproj
+index 53b4788..7c1c3ed 100644
+--- a/VoodooGPIO.xcodeproj/project.pbxproj
++++ b/VoodooGPIO.xcodeproj/project.pbxproj
+@@ -23,6 +23,7 @@
+ 		F1F172C91F42263A00AD98FA /* VoodooGPIO.hpp in Headers */ = {isa = PBXBuildFile; fileRef = F1F172C81F42263A00AD98FA /* VoodooGPIO.hpp */; };
+ 		F1F172CB1F42263A00AD98FA /* VoodooGPIOIntel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F1F172CA1F42263A00AD98FA /* VoodooGPIOIntel.cpp */; };
+ 		FBE40CF824E2373400CDC4ED /* VoodooGPIOIceLakeLP.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FBE40CF624E2373400CDC4ED /* VoodooGPIOIceLakeLP.cpp */; };
++		A1B2C3D4E5F60718293A4B04 /* VoodooGPIOTigerLakeLP.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B02 /* VoodooGPIOTigerLakeLP.cpp */; };
+ 		FBE40CF924E2373400CDC4ED /* VoodooGPIOIceLakeLP.hpp in Headers */ = {isa = PBXBuildFile; fileRef = FBE40CF724E2373400CDC4ED /* VoodooGPIOIceLakeLP.hpp */; };
+ /* End PBXBuildFile section */
+ 
+@@ -46,6 +47,8 @@
+ 		F1F172CA1F42263A00AD98FA /* VoodooGPIOIntel.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VoodooGPIOIntel.cpp; sourceTree = "<group>"; };
+ 		F1F172CC1F42263A00AD98FA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+ 		FBE40CF624E2373400CDC4ED /* VoodooGPIOIceLakeLP.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VoodooGPIOIceLakeLP.cpp; sourceTree = "<group>"; };
++		A1B2C3D4E5F60718293A4B02 /* VoodooGPIOTigerLakeLP.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VoodooGPIOTigerLakeLP.cpp; sourceTree = "<group>"; };
++		A1B2C3D4E5F60718293A4B03 /* VoodooGPIOTigerLakeLP.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = VoodooGPIOTigerLakeLP.hpp; sourceTree = "<group>"; };
+ 		FBE40CF724E2373400CDC4ED /* VoodooGPIOIceLakeLP.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = VoodooGPIOIceLakeLP.hpp; sourceTree = "<group>"; };
+ /* End PBXFileReference section */
+ 
+@@ -128,6 +131,7 @@
+ 				ACD8275F219D06AF0041DE1B /* CannonLake-H */,
+ 				ACD8275A219D03290041DE1B /* CannonLake-LP */,
+ 				FBE40CF524E2366B00CDC4ED /* IceLake-LP */,
++				A1B2C3D4E5F60718293A4B01 /* TigerLake-LP */,
+ 				F10447AB1F4278AB00BA5A85 /* SunrisePoint-H */,
+ 				F142D1181F42C244007AA5C6 /* SunrisePoint-LP */,
+ 				40AAD2D329B657EC001C60CD /* VoodooGPIO.cpp */,
+@@ -151,6 +155,15 @@
+ 			path = "IceLake-LP";
+ 			sourceTree = "<group>";
+ 		};
++		A1B2C3D4E5F60718293A4B01 /* TigerLake-LP */ = {
++			isa = PBXGroup;
++			children = (
++				A1B2C3D4E5F60718293A4B02 /* VoodooGPIOTigerLakeLP.cpp */,
++				A1B2C3D4E5F60718293A4B03 /* VoodooGPIOTigerLakeLP.hpp */,
++			);
++			path = "TigerLake-LP";
++			sourceTree = "<group>";
++		};
+ /* End PBXGroup section */
+ 
+ /* Begin PBXHeadersBuildPhase section */
+@@ -244,6 +257,7 @@
+ 				40AFB77629B6207E00223D0C /* VoodooGPIOAMD.cpp in Sources */,
+ 				40AAD2D429B657EC001C60CD /* VoodooGPIO.cpp in Sources */,
+ 				FBE40CF824E2373400CDC4ED /* VoodooGPIOIceLakeLP.cpp in Sources */,
++				A1B2C3D4E5F60718293A4B04 /* VoodooGPIOTigerLakeLP.cpp in Sources */,
+ 				ACD82762219D06C20041DE1B /* VoodooGPIOCannonLakeH.cpp in Sources */,
+ 				F1F172CB1F42263A00AD98FA /* VoodooGPIOIntel.cpp in Sources */,
+ 			);
+diff --git a/VoodooGPIO/TigerLake-LP/VoodooGPIOTigerLakeLP.cpp b/VoodooGPIO/TigerLake-LP/VoodooGPIOTigerLakeLP.cpp
+index 5eae359..977a0b0 100644
+--- a/VoodooGPIO/TigerLake-LP/VoodooGPIOTigerLakeLP.cpp
++++ b/VoodooGPIO/TigerLake-LP/VoodooGPIOTigerLakeLP.cpp
+@@ -22,5 +22,5 @@ bool VoodooGPIOTigerLakeLP::start(IOService *provider) {
+ 
+     IOLog("%s::Loading GPIO Data for TigerLake-LP\n", getName());
+ 
+-    return VoodooGPIO::start(provider);
++    return VoodooGPIOIntel::start(provider);
+ }

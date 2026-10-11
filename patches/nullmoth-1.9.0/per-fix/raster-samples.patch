@@ -1,0 +1,127 @@
+--- nvmtl_vk.c.pre-rastersamples	2026-10-10 00:24:28
++++ nvmtl_vk.c	2026-10-10 00:24:28
+@@ -3537,9 +3537,14 @@
+     VkShaderModule vmod = VK_NULL_HANDLE, fmod = VK_NULL_HANDLE, tvm = VK_NULL_HANDLE, tcm = VK_NULL_HANDLE;
+     NVMTL_PIPELINE_STAGE(pvkCreateShaderModule(g_dev, &vsm, NULL, &vmod), "vkCreateShaderModule(vertex)");
+     NVMTL_PIPELINE_STAGE(pvkCreateShaderModule(g_dev, &fsm, NULL, &fmod), "vkCreateShaderModule(fragment)");
++    // The fragment shader's get_num_samples() (ANGLE's sample-mask code), translated before any pipeline existed, is
++    // a specialization constant (translator RASTER_SAMPLE_COUNT_SPEC_ID); unused IDs are ignored by Vulkan.
++    const uint32_t fs_samples = samples > 1 ? samples : 1;
++    const VkSpecializationMapEntry fs_me = { 0x4E560001u, 0, 4 };
++    const VkSpecializationInfo fs_si = { 1, &fs_me, 4, &fs_samples };
+     VkPipelineShaderStageCreateInfo stages[4] = {
+         { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, td ? VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT : VK_SHADER_STAGE_VERTEX_BIT, vmod, "main", NULL },
+-        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fmod, "main", NULL } };
++        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fmod, "main", &fs_si } };
+     uint32_t nstages = 2;
+     if (td) {
+         VkShaderModuleCreateInfo tvi = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, tvsd.length, (const uint32_t *)tvsd.bytes };
+--- src/passes/mod.rs.pre-rastersamples	2026-10-10 00:22:33
++++ src/passes/mod.rs	2026-10-10 00:22:50
+@@ -312,6 +312,7 @@
+     kernel_workgroup_size_id: Option<Word>,
+     kernel_dispatch: crate::reflect::KernelDispatch,
+     raster_sample_count: Option<u32>,
++    raster_sample_count_spec: Option<Word>,
+     vertex_amplification_count: u32,
+     runtime_sampler_states: [Option<RuntimeSamplerState>; SAMPLER_ARGUMENT_COUNT_USIZE],
+     runtime_storage_image_states: [Option<RuntimeStorageImageState>; TEXTURE_ARGUMENT_COUNT_USIZE],
+@@ -400,6 +401,7 @@
+                 .kernel_dispatch
+                 .unwrap_or_else(crate::reflect::KernelDispatch::safe_default),
+             raster_sample_count: options.raster_sample_count,
++            raster_sample_count_spec: None,
+             vertex_amplification_count: options.vertex_amplification_count,
+             runtime_sampler_states: options.runtime_sampler_states,
+             runtime_storage_image_states: options.runtime_storage_image_states,
+@@ -1287,6 +1289,34 @@
+         };
+         self.kernel_local_size_ids = Some(ids);
+         ids
++    }
++
++    /// The raster sample count as a specialization constant (default 1), for shaders translated before the
++    /// pipeline is known; see `crate::reflect::RASTER_SAMPLE_COUNT_SPEC_ID`.
++    pub(in crate::passes) fn raster_sample_count_spec_id(&mut self) -> Word {
++        if let Some(id) = self.raster_sample_count_spec {
++            return id;
++        }
++        let uint_ty = self.ty_uint();
++        let id = self.module.fresh_id();
++        self.new_globals.push(Instruction::new(
++            Op::SpecConstant,
++            Some(uint_ty),
++            Some(id),
++            vec![Operand::LiteralBit32(1)],
++        ));
++        self.module.annotations.push(Instruction::new(
++            Op::Decorate,
++            None,
++            None,
++            vec![
++                Operand::IdRef(id),
++                Operand::Decoration(Decoration::SpecId),
++                Operand::LiteralBit32(crate::reflect::RASTER_SAMPLE_COUNT_SPEC_ID),
++            ],
++        ));
++        self.raster_sample_count_spec = Some(id);
++        id
+     }
+ 
+     fn kernel_workgroup_size_id(&mut self) -> Word {
+--- src/passes/air_calls/dispatch_texture.rs.pre-rastersamples	2026-10-10 00:22:33
++++ src/passes/air_calls/dispatch_texture.rs	2026-10-10 00:22:50
+@@ -1480,17 +1480,17 @@
+     if ctx.stage != Stage::Fragment {
+         return Err(format!("{name} requires fragment stage"));
+     }
+-    let samples = ctx.raster_sample_count.ok_or_else(|| {
+-        format!(
+-            "{name} requires TransformOptions::raster_sample_count to match the graphics pipeline"
+-        )
+-    })?;
++    let uint = ctx.ty_uint();
++    let Some(samples) = ctx.raster_sample_count else {
++        // Unknown at translation time: the pipeline specializes it (RASTER_SAMPLE_COUNT_SPEC_ID).
++        let value = ctx.raster_sample_count_spec_id();
++        return Ok(vec![copy_or_bitcast_result(rty, res, uint, value)]);
++    };
+     if !matches!(samples, 1 | 2 | 4 | 8 | 16 | 32 | 64) {
+         return Err(format!(
+             "{name} raster sample count {samples} is not a Vulkan sample-count value"
+         ));
+     }
+-    let uint = ctx.ty_uint();
+     let value = ctx.const_uint(samples);
+     Ok(vec![copy_or_bitcast_result(rty, res, uint, value)])
+ }
+--- src/reflect/mod.rs.pre-rastersamples	2026-10-10 00:22:33
++++ src/reflect/mod.rs	2026-10-10 00:22:50
+@@ -19,6 +19,10 @@
+ pub const KERNEL_DISPATCH_PUSH_CONSTANT_SIZE: u32 = 48;
+ 
+ pub const KERNEL_LOCAL_SIZE_SPEC_IDS: [u32; 3] = [0, 1, 2];
++
++/// SpecId of the fragment raster sample count when it was not known at translation time (Metal libraries are
++/// translated before any pipeline exists). The host specializes it with the pipeline's rasterizationSamples.
++pub const RASTER_SAMPLE_COUNT_SPEC_ID: u32 = 0x4E56_0001;
+ 
+ pub const DEFAULT_KERNEL_DISPATCH_PUSH_CONSTANT_OFFSET: u32 = 0;
+ 
+--- src/native/tests/textures.rs.pre-rastersamples	2026-10-10 00:22:33
++++ src/native/tests/textures.rs	2026-10-10 00:22:50
+@@ -3198,9 +3198,11 @@
+         std::process::id()
+     ));
+     let _ = std::fs::create_dir_all(&tmp);
+-    let error = crate::translate_sanitized_native(ll, Stage::Fragment, &tmp)
+-        .expect_err("unknown pipeline state must remain unsupported");
+-    assert!(error.contains("raster_sample_count"), "{error}");
++    let spv = crate::translate_sanitized_native(ll, Stage::Fragment, &tmp)
++        .expect("unknown pipeline state becomes a specialization constant");
++    let asm = disassemble(&spv).expect("disassemble");
++    assert!(!asm.contains("air.get_num_samples.i32"), "{asm}");
++    assert!(asm.contains("OpSpecConstant") && asm.contains(&format!("SpecId {}", crate::reflect::RASTER_SAMPLE_COUNT_SPEC_ID)), "{asm}");
+ 
+     let options = crate::passes::TransformOptions {
+         raster_sample_count: Some(4),

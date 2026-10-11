@@ -1,0 +1,105 @@
+--- ../repo/plugin/NVMTLObjects.h	2026-10-08 22:46:43
++++ NVMTLObjects.h	2026-10-09 02:06:22
+@@ -17,7 +17,7 @@
+ }
+ @class NVMTLHeap;
+ @interface NVMTLBuffer : NSObject <MTLBuffer> { @public nvk_buffer _b; MTLStorageMode _storage; NVMTLHeap *_heap; NSUInteger _heapOffset;
+-    void *_hostPtr; size_t _hostLen; id _hostDealloc;
++    void *_hostPtr; size_t _hostLen; id _hostDealloc; uint64_t _hostInHash;
+     NVMTLHeap *_subHeap; NSUInteger _subCharge; BOOL _aliased;
+     nvk_buffer _shadow; int _syncOut; int _zshadow;
+     NSUInteger _dirtyLo, _dirtyHi; } @end
+@@ -49,6 +49,7 @@
+   uint64_t _resid;
+   NSUInteger _usage;
+   NVMTLBuffer *_backBuf; NSUInteger _backOff, _backBPR;
++  NVMTLBuffer *_cpyBuf; NSUInteger _cpyOff, _cpyBPR; uint8_t *_cpyShadow; size_t _cpyLen;
+ }
+ - (nvk_image *)nvi;
+ - (void *)nvview;
+--- ../repo/plugin/NVMTLObjects.m	2026-10-08 22:46:43
++++ NVMTLObjects.m	2026-10-09 02:06:49
+@@ -750,6 +750,12 @@
+     MTLTextureDescriptor *cd = [d copy]; cd.storageMode = MTLStorageModeShared;
+     id<MTLTexture> c = [[self device] newTextureWithDescriptor:cd];
+     if (c) [c replaceRegion:MTLRegionMake2D(0, 0, d.width, d.height) mipmapLevel:0 withBytes:(char *)base + offset bytesPerRow:bpr];
++    // The copy is a snapshot, but the caller keeps writing the buffer and expects the texture to show it (Core Animation
++    // fills recycled buffers after making the texture): remember the source and re-upload it when its bytes change.
++    if (c && [(id)c isKindOfClass:[NVMTLTexture class]]) {
++        NVMTLTexture *ct = (NVMTLTexture *)c; const size_t len = (size_t)bpr * d.height;
++        if ((ct->_cpyShadow = malloc(len))) { memcpy(ct->_cpyShadow, (char *)base + offset, len);
++            ct->_cpyBuf = self; ct->_cpyOff = offset; ct->_cpyBPR = bpr; ct->_cpyLen = len; } }
+     { static int said; if (!said++) nvlog("newTiledTextureWithDescriptor: linear view refused -> copied texture (%lux%lu bpr %lu; said once)",
+                                           (unsigned long)d.width, (unsigned long)d.height, (unsigned long)bpr); }
+     return c;
+@@ -1011,6 +1017,7 @@
+     if (!_parent) nvmtl_vk_image_destroy(&_i);
+     if (!_parent && _vramOn) { nvmtl_vk_buffer_destroy(&_vramBuf); _vramOn = NO; }
+     if (_surfOwned && _surf) CFRelease(_surf);
++    free(_cpyShadow); _cpyShadow = NULL; _cpyBuf = nil;
+     if (_subHeap) { NVMTLHeap *h = _subHeap; NSUInteger c = _subCharge; _subHeap = nil; _subCharge = 0;
+                     if (_subPlaced && c) { _subPlaced = NO; [h nvmtlGiveRange:_heapOffset length:c]; }
+                     [h nvmtlReleaseSubAllocation:c]; }
+@@ -1025,9 +1032,34 @@
+     static int said; if (said++ < 4) nvlog("G13 surface %p plane %lu NOT synced: image %ux%u bpp %u, surface bytesPerElement %zu — its pixels stay on one side",
+         (void *)_surf, (unsigned long)_plane, _i.w, _i.h, _i.bpp, IOSurfaceGetBytesPerElementOfPlane(_surf, (uint32_t)_plane));
+     return NO;
++}
++- (void)nvmtlCopyIn {
++    NVMTLTexture *r = _parent ? _parent : self;
++    @synchronized (r) {
++        const uint8_t *src = (const uint8_t *)[(id<MTLBuffer>)r->_cpyBuf contents];
++        if (!src || !memcmp(r->_cpyShadow, src + r->_cpyOff, r->_cpyLen)) return;
++        memcpy(r->_cpyShadow, src + r->_cpyOff, r->_cpyLen);
++        if (nvmtl_vk_image_write_region_level_layer(r->_q, &r->_i, r->_cpyShadow, r->_cpyBPR, 0, 0, r->_i.w, r->_i.h, 0, 0))
++            nvlog("copied buffer texture: re-upload FAILED (%ux%u)", r->_i.w, r->_i.h);
++        else { static _Atomic unsigned long long n; const unsigned long long k = atomic_fetch_add(&n, 1) + 1;
++            if (!(k & (k - 1))) nvlog("copied buffer texture (linear view refused): re-synced from its buffer %llu times (last %ux%u)", k, r->_i.w, r->_i.h); }
++    }
+ }
+ - (void)nvmtlSurfaceIn {
+     NVMTLTexture *r = _parent ? _parent : self;
++    if (r->_cpyBuf) { [self nvmtlCopyIn]; return; }
++    // A texture made over a no-copy buffer whose pages could not be imported reads our copy of those pages, and that copy
++    // was only refreshed when the buffer itself was bound. Core Animation binds just the texture and keeps rewriting the
++    // pages (small shared-memory layer contents), so refresh the copy here or the layer shows stale/black bytes.
++    if (r->_backBuf && r->_backBuf->_hostPtr) {
++        NVMTLBuffer *bb = r->_backBuf;
++        if (bb->_b.map && bb->_hostLen && memcmp(bb->_b.map, bb->_hostPtr, bb->_hostLen)) {
++            nvmtl_buffer_sync_in(bb);
++            static _Atomic unsigned long long n; const unsigned long long k = atomic_fetch_add(&n, 1) + 1;
++            if (!(k & (k - 1))) nvlog("texture over a copied (import refused) buffer: refreshed from the caller's pages %llu times (last %zu B)", k, bb->_hostLen);
++        }
++        return;
++    }
+     if (!r->_surf) return;
+     const uint32_t vgen = r->_vramOn ? 0 : nvmtl_vram_gen(r->_surf, r->_plane);
+     if (r->_surfSynced && IOSurfaceGetSeed(r->_surf) == r->_surfSeed && (r->_vramOn || vgen == r->_surfGen)) return;
+@@ -5204,11 +5236,19 @@
+ - (void)sampleCountersInBuffer:(id<MTLCounterSampleBuffer>)b atSampleIndex:(NSUInteger)i withBarrier:(BOOL)w { nvmtl_sample_counter(_cb, b, i, self, w); }
+ @end
+ 
++static uint64_t nvmtl_host_hash(const void *p, size_t n)
++{
++    const uint8_t *s = p; uint64_t h = 0x9e3779b97f4a7c15ull ^ n; size_t i = 0;
++    for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, s + i, 8); h = (h ^ w) * 0x100000001b3ull; h ^= h >> 29; }
++    for (; i < n; i++) h = (h ^ s[i]) * 0x100000001b3ull;
++    return h;
++}
+ static void nvmtl_buffer_sync_in(NVMTLBuffer *b)
+ {
+     if (!b || !b->_hostPtr || !b->_b.map || !b->_hostLen) return;
+     const uint64_t t0 = nvmtl_perf_now();
+     memcpy(b->_b.map, b->_hostPtr, b->_hostLen);
++    b->_hostInHash = nvmtl_host_hash(b->_b.map, b->_hostLen);
+     nvmtl_perf_note(NVP_SYNCIN, t0, b->_hostLen);
+ }
+ 
+@@ -5220,6 +5260,7 @@
+         return;
+     }
+     if (!b || !b->_hostPtr || !b->_b.map || !b->_hostLen) return;
++    if (b->_hostInHash && nvmtl_host_hash(b->_b.map, b->_hostLen) == b->_hostInHash) return;
+     const uint64_t t0 = nvmtl_perf_now();
+     memcpy(b->_hostPtr, b->_b.map, b->_hostLen);
+     nvmtl_perf_note(NVP_SYNCOUT, t0, b->_hostLen);

@@ -1,0 +1,24 @@
+// plugshim: DYLD_INSERT_LIBRARIES=plugshim.dylib NVMTL_TEST_PLUGIN=/path/NVMTLDriver <test> - makes
+// MTLCreateSystemDefaultDevice() in a catest binary return a device of the given plugin build (not the installed one).
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#import <IOKit/IOKitLib.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
+#import <dlfcn.h>
+static id<MTLDevice> shim_create(void) {
+    static id<MTLDevice> dev; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *p = getenv("NVMTL_TEST_PLUGIN");
+        if (!p || !dlopen(p, RTLD_NOW)) { fprintf(stderr, "plugshim: dlopen %s: %s\n", p ? p : "(unset)", dlerror()); exit(3); }
+        io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOAccelerator"));
+        dev = ((id (*)(id, SEL, mach_port_t))objc_msgSend)([objc_getClass("NVMTLDevice") alloc], sel_registerName("initWithAcceleratorPort:"), svc);
+        fprintf(stderr, "plugshim: device from %s\n", p);
+    });
+    return dev;
+}
+// Apple's GL-on-Metal renderer (AppleMetalOpenGLRenderer) finds its device through MTLCopyAllDevices, not the default device.
+static void *shim_copy_all(void) { return (void *)CFBridgingRetain(@[shim_create()]); }   // MTLCopyAllDevices returns +1
+__attribute__((used)) static struct { const void *rep, *orig; } interposers[] __attribute__((section("__DATA,__interpose"))) = {
+    { (const void *)shim_create, (const void *)MTLCreateSystemDefaultDevice },
+    { (const void *)shim_copy_all, (const void *)MTLCopyAllDevices } };

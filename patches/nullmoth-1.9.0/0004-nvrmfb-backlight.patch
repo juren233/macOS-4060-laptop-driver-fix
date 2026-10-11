@@ -1,0 +1,231 @@
+diff --git a/kexts/NVRMFB/fb/nvrm-fb.cpp b/kexts/NVRMFB/fb/nvrm-fb.cpp
+index 135b985..5a875fd 100644
+--- a/kexts/NVRMFB/fb/nvrm-fb.cpp
++++ b/kexts/NVRMFB/fb/nvrm-fb.cpp
+@@ -18,6 +18,7 @@
+ #include <IOKit/IOPlatformExpert.h>
+ #include <IOKit/IOSubMemoryDescriptor.h>
+ #include <IOKit/graphics/IOFramebuffer.h>
++#include <IOKit/graphics/IODisplay.h>
+ #include <IOKit/graphics/IOGraphicsTypes.h>
+ #include <libkern/c++/OSNumber.h>
+ #include <libkern/c++/OSString.h>
+@@ -68,6 +69,8 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
+     struct NvKmsKapiDevice *fDev = nullptr;
+     NvKmsKapiDisplay fDisplay = 0; NvKmsKapiConnector fConnector = 0; NvU32 fHead = 0;
+     unsigned fIndex = 0; bool fOwnsHead = false;
++    bool fInternal = false;      // drives the laptop's eDP panel: reported as built-in, owns the backlight
++    void backlightSetup();
+     bool fBootConsole = false;
+     struct NvKmsKapiDisplayMode fMode = {};
+     struct NvKmsKapiMemory *fMem = nullptr; struct NvKmsKapiSurface *fSurf = nullptr;
+@@ -228,6 +231,15 @@ public:
+           return kIOReturnSuccess; }
+     IOReturn setAttributeForConnection(IOIndex connectIndex, IOSelect attribute, uintptr_t value) override;
+     IOItemCount getConnectionCount() override { return 1; }
++    // Only AppleBacklightDisplay::probe asks (kConnectionSupportsAppleSense stays unsupported): the panel is an LCD.
++    IOReturn getAppleSense(IOIndex, UInt32 *senseType, UInt32 *primary, UInt32 *extended, UInt32 *displayType) override {
++        if (!fInternal) return kIOReturnUnsupported;
++        if (senseType) *senseType = 0;
++        if (primary) *primary = 0;
++        if (extended) *extended = 0;
++        if (displayType) *displayType = 20;   // kGenericLCD (IOMacOSVideo.h)
++        return kIOReturnSuccess;
++    }
+     bool hasDDCConnect(IOIndex) override { return fEdidSize >= 128; }
+     IOReturn getDDCBlock(IOIndex connectIndex, UInt32 blockNumber, IOSelect blockType, IOOptionBits options, UInt8 *data, IOByteCount *length) override;
+     IOReturn registerForInterruptType(IOSelect type, IOFBInterruptProc proc, OSObject *target, void *ref, void **interruptRef) override;
+@@ -236,7 +248,7 @@ public:
+ };
+ OSDefineMetaClassAndStructors(NVRMNVDAFramebuffer, IOFramebuffer)
+ struct nvrm_dpy_rec {
+-    NvKmsKapiDisplay handle; NvKmsKapiConnector connector; NvU32 headMask;
++    NvKmsKapiDisplay handle; NvKmsKapiConnector connector; NvU32 headMask; NvBool internal;
+     NvU32 edidSize; NvU8 edid[NVKMS_KAPI_EDID_BUFFER_SIZE];
+ };
+ static struct NvKmsKapiDevice *gDev;
+@@ -421,7 +433,8 @@ bool NVRMNVDAFramebuffer::kapiInit()
+             if (!dd->connected || !gs) continue;
+             if (gNDpy >= (int)(sizeof gDpy / sizeof gDpy[0])) { FBLOG("dpy table full at %d", gNDpy); break; }
+             struct nvrm_dpy_rec *r = &gDpy[gNDpy++];
+-            r->handle = handles[i]; r->connector = si.connectorHandle; r->headMask = si.headMask;
++            r->handle = handles[i]; r->connector = si.connectorHandle; r->headMask = si.headMask; r->internal = si.internal;
++            if (si.internal) FBLOG("dpy 0x%x is the internal panel", handles[i]);
+             r->edidSize = dd->edid.bufferSize > sizeof r->edid ? (NvU32)sizeof r->edid : dd->edid.bufferSize;
+             nvu_copy(r->edid, dd->edid.buffer, r->edidSize);
+         }
+@@ -487,7 +500,7 @@ bool NVRMNVDAFramebuffer::kapiInit()
+     }
+     {
+         struct nvrm_dpy_rec *r = &gDpy[fIndex];
+-        fDisplay = r->handle; fConnector = r->connector;
++        fDisplay = r->handle; fConnector = r->connector; fInternal = r->internal;
+         fEdidSize = (NvU16)(r->edidSize > sizeof fEdid ? sizeof fEdid : r->edidSize);
+         nvu_copy(fEdid, r->edid, fEdidSize);
+         NvU32 avail = r->headMask & ~gHeadsTaken;
+@@ -1351,6 +1364,148 @@ static void nvrmDiscoverBar1(IOService *provider, NvU64 *length, NvU64 *base)
+         return;
+     }
+ }
++// ---- built-in panel backlight ----
++// NVDSM (Lilu) captures NVKMS's backlight registration and publishes the resource "NVDSMBacklight": get/set the panel
++// backlight in percent through nvKmsGet/SetBacklight (GSP, PWM pin). With it, the internal panel's framebuffer
++//  - reports kIOConnectionBuiltIn and an LCD Apple sense, and a service named "backlight" exists before the first
++//    IOFramebuffer::open (gIOFBHaveBacklight): IOGraphics then attaches AppleBacklightDisplay instead of AppleDisplay;
++//  - provides the IODisplay "brightness" parameter through NVRMBacklightHandler, a child of this framebuffer
++//    (IODisplay::start collects the handlers below it), so DisplayServices, Control Center and the brightness keys
++//    can change it. Sets run on a thread call: IODisplay calls handlers with the fb lock held.
++struct NVDSMBacklightAPI {
++    uint32_t version;   // 1
++    IOReturn (*get)(uint32_t *pct);
++    IOReturn (*set)(uint32_t pct);
++};
++static NVDSMBacklightAPI gBlApi;
++#define BLLOG(fmt, ...) do { IOLog("NVRM-fb: " fmt "\n", ##__VA_ARGS__); kprintf("NVRM-fb: " fmt "\n", ##__VA_ARGS__); } while (0)
++static IOService *gBlNub;
++
++static bool blApiLoad()
++{
++    if (gBlApi.version == 1) return true;
++    OSObject *o = IOService::getResourceService()->copyProperty("NVDSMBacklight");
++    OSData *d = OSDynamicCast(OSData, o);
++    if (d && d->getLength() >= sizeof gBlApi) {
++        NVDSMBacklightAPI a; memcpy(&a, d->getBytesNoCopy(), sizeof a);
++        if (a.version == 1 && a.get && a.set) gBlApi = a;
++    }
++    OSSafeReleaseNULL(o);
++    return gBlApi.version == 1;
++}
++
++class NVRMBacklightHandler : public IODisplayParameterHandler
++{
++    OSDeclareDefaultStructors(NVRMBacklightHandler)
++public:
++    // WindowServer (CoreDisplay's IOBacklight path) drives "linear-brightness" and converts with the "-probe" pair;
++    // older clients use "brightness". All four share one 0..kMax scale: the panel PWM is linear in luminance and the
++    // user <-> linear curve is identity here, so a probe of one just mirrors into the other.
++    static constexpr SInt32 kMax = 1024;
++    IODisplay *fDisplay = nullptr;
++    thread_call_t fCall = nullptr;
++    volatile SInt32 fTarget = -1;
++    SInt32 fUi = kMax;
++    uint32_t fLastPct = 101;
++    const OSSymbol *fLin = nullptr, *fLinProbe = nullptr, *fProbe = nullptr;
++
++    static NVRMBacklightHandler *withPercent(uint32_t pct) {
++        NVRMBacklightHandler *h = new NVRMBacklightHandler;
++        if (h && !h->init()) { h->release(); return nullptr; }
++        if (h) {
++            h->fCall = thread_call_allocate(work, h);
++            h->fUi = (SInt32)((pct > 100 ? 100 : pct) * kMax / 100);
++            h->fLastPct = pct;
++            h->fLin = OSSymbol::withCStringNoCopy(kIODisplayLinearBrightnessKey);
++            h->fLinProbe = OSSymbol::withCStringNoCopy(kIODisplayLinearBrightnessProbeKey);
++            h->fProbe = OSSymbol::withCStringNoCopy(kIODisplayBrightnessProbeKey);
++        }
++        return h;
++    }
++    static uint32_t uiToPct(SInt32 ui) {
++        if (ui < 0) ui = 0;
++        if (ui > kMax) ui = kMax;
++        uint32_t pct = (uint32_t)((ui * 100 + kMax / 2) / kMax);
++        return pct ? pct : 1;   // 0 % switches the panel backlight off; the bottom of the slider stays readable
++    }
++    static void work(thread_call_param_t p0, thread_call_param_t) {
++        NVRMBacklightHandler *h = (NVRMBacklightHandler *)p0;
++        SInt32 ui = h->fTarget;
++        if (ui < 0) return;
++        uint32_t pct = uiToPct(ui);
++        if (pct == h->fLastPct) return;
++        IOReturn r = gBlApi.set ? gBlApi.set(pct) : kIOReturnNotReady;
++        if (r == kIOReturnSuccess) h->fLastPct = pct;
++        static unsigned logged;
++        if (++logged <= 16 || r != kIOReturnSuccess) BLLOG("backlight: %d/%d -> %u %% (0x%x)", (int)ui, (int)kMax, pct, r);
++    }
++    // Updates another parameter's current value in the display's live IODisplayParameters (in place, like IODisplay).
++    void mirror(const OSSymbol *key, SInt32 value) {
++        if (!fDisplay || !key) return;
++        OSObject *prop = fDisplay->copyProperty(gIODisplayParametersKey);
++        if (OSDictionary *dict = OSDynamicCast(OSDictionary, prop)) IODisplay::setParameter(dict, key, value);
++        OSSafeReleaseNULL(prop);
++    }
++    bool setDisplay(IODisplay *display) override {
++        fDisplay = display;
++        if (!display) return false;
++        OSObject *prop = display->copyProperty(gIODisplayParametersKey);
++        OSDictionary *cur = OSDynamicCast(OSDictionary, prop);
++        OSDictionary *dict = cur ? OSDictionary::withDictionary(cur) : OSDictionary::withCapacity(4);
++        OSSafeReleaseNULL(prop);
++        if (!dict) return false;
++        const OSSymbol *keys[] = { gIODisplayBrightnessKey, fLin, fProbe, fLinProbe };
++        for (const OSSymbol *k : keys) {
++            if (!k) continue;
++            IODisplay::addParameter(dict, k, 0, kMax);
++            IODisplay::setParameter(dict, k, fUi);
++        }
++        display->setProperty(gIODisplayParametersKey, dict);
++        dict->release();
++        BLLOG("backlight: brightness/linear-brightness parameters on %s (%d/%d)", display->getMetaClass()->getClassName(), (int)fUi, (int)kMax);
++        return true;
++    }
++    bool doIntegerSet(OSDictionary *, const OSSymbol *paramName, UInt32 value) override {
++        static unsigned logged;
++        bool user = paramName == gIODisplayBrightnessKey, lin = paramName == fLin;
++        if (user || lin) {
++            if (++logged <= 24) BLLOG("backlight: set %s = %u", paramName->getCStringNoCopy(), (unsigned)value);
++            fUi = (SInt32)value;
++            mirror(user ? fLin : gIODisplayBrightnessKey, (SInt32)value);
++            fTarget = (SInt32)value;
++            if (fCall) thread_call_enter(fCall);
++            return true;
++        }
++        if (paramName == fProbe || paramName == fLinProbe) {
++            mirror(paramName == fProbe ? fLinProbe : fProbe, (SInt32)value);
++            return true;
++        }
++        return false;
++    }
++    bool doDataSet(const OSSymbol *, OSData *) override { return false; }
++    bool doUpdate() override { return true; }
++};
++OSDefineMetaClassAndStructors(NVRMBacklightHandler, IODisplayParameterHandler)
++
++void NVRMNVDAFramebuffer::backlightSetup()
++{
++    uint32_t pct = 0;
++    if (gBlNub) return;
++    if (!blApiLoad()) { FBLOG("backlight: NVDSMBacklight resource absent (NVDSM v8 not loaded) -- no brightness control"); return; }
++    IOReturn r = gBlApi.get(&pct);
++    if (r != kIOReturnSuccess) { FBLOG("backlight: NVKMS reports no panel backlight (0x%x)", r); return; }
++    IOService *nub = new IOService;
++    if (!nub || !nub->init()) { OSSafeReleaseNULL(nub); return; }
++    nub->setName("backlight");
++    NVRMBacklightHandler *h = NVRMBacklightHandler::withPercent(pct);
++    if (!h || !nub->attach(getResourceService())) { OSSafeReleaseNULL(h); nub->release(); return; }
++    h->attach(this);   // IODisplay::start searches the framebuffer's subtree (the "backlight" subtree is not searched on 15)
++    h->release();
++    nub->registerService(kIOServiceSynchronous);
++    gBlNub = nub;
++    FBLOG("backlight: panel at %u %%, \"backlight\" service + brightness handler published", pct);
++}
++
+ bool NVRMNVDAFramebuffer::start(IOService *provider)
+ {
+     { if (nvrm_driver_off()) return false; }
+@@ -1388,6 +1543,7 @@ bool NVRMNVDAFramebuffer::start(IOService *provider)
+         return false;
+     }
+     setName("NVRMFramebuffer");
++    if (fInternal) backlightSetup();
+     if (!super::start(provider)) {
+         NVRMDisplayGate gate; if (gate.valid() && fOwnsHead) { gHeadsTaken &= ~(1u << fHead); fOwnsHead = false; }
+         FBLOG("super::start failed after kapiInit succeeded"); return false;
+@@ -2319,7 +2475,7 @@ IOReturn NVRMNVDAFramebuffer::getAttributeForConnection(IOIndex connectIndex, IO
+     FBSEL(attribute);
+     switch (attribute) {
+     case kConnectionEnable: if (value) *value = 1; FBLOG("getAFC '%s' -> enable 1", _s); return kIOReturnSuccess;
+-    case kConnectionFlags:  if (value) *value = 0; return kIOReturnSuccess;
++    case kConnectionFlags:  if (value) *value = fInternal ? kIOConnectionBuiltIn : 0; return kIOReturnSuccess;
+     case kConnectionColorModesSupported:       if (value) *value = 0x00000001; return kIOReturnSuccess;
+     case kConnectionColorDepthsSupported:      if (value) *value = 0x00000002; return kIOReturnSuccess;
+     case kConnectionControllerColorDepth:      if (value) *value = 0x00000002; return kIOReturnSuccess;

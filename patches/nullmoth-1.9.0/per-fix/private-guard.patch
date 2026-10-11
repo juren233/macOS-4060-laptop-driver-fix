@@ -1,0 +1,62 @@
+--- NVMTLObjects.m.pre-privguard	2026-10-10 08:50:29
++++ NVMTLObjects.m	2026-10-10 08:59:03
+@@ -900,6 +900,7 @@
+     NVMTLTexture *r = t->_parent ? t->_parent : t;
+     if (!r->_surf) return;
+     if (!cb->_surfDirty) cb->_surfDirty = [NSMutableSet new];
++    if ([cb->_surfDirty containsObject:r]) return;   // one mark per surface per submission part: the publish is counted the same way
+     [cb->_surfDirty addObject:r];
+     nvsd_mark((uint32_t)IOSurfaceGetID(r->_surf), 0);
+ }
+@@ -1122,13 +1123,15 @@
+     if (r->_surfSynced && IOSurfaceGetSeed(r->_surf) == r->_surfSeed && (r->_vramOn || vgen == r->_surfGen)) return;
+     if (![r nvmtlSurfaceCopyable]) return;
+     { uint32_t now = IOSurfaceGetSeed(r->_surf);
+-      if (r->_vramOn && nvsd_guard_on() && nvsd_pending((uint32_t)IOSurfaceGetID(r->_surf))) {
++      if (nvsd_guard_on() && nvsd_pending((uint32_t)IOSurfaceGetID(r->_surf))) {
++          // Private images too: this process's own surface-out raises the seed after every frame, so an upload keyed on
++          // "seed changed" would copy the CPU pages - an OLDER frame - over the GPU image that newer passes already drew into.
+           // This process has GPU writes to the surface's VRAM queued or running; the CPU pages are older than what they will
+           // leave there, and uploading them now would overwrite (or race) those writes. The surface-out after they complete
+           // publishes them.
+           r->_surfSeed = now; r->_surfSynced = YES;
+-          NVDIAG(200, "surfin GUARD: surf %u %ux%u has GPU writes in flight - CPU upload over its VRAM skipped (seed %u)",
+-                 (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h, now);
++          NVDIAG(200, "surfin GUARD: surf %u %ux%u has GPU writes in flight - CPU upload over its %s skipped (seed %u)",
++                 (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h, r->_vramOn ? "VRAM" : "image", now);
+           return; }
+       if (r->_vramOn && nvmtl_vram_tag_current(r->_surf, r->_plane, now)) {
+           r->_surfSeed = now; r->_surfSynced = YES; g_surfin_skip++;
+--- nvmtl_diag.h.pre-privguard	2026-10-10 08:59:03
++++ nvmtl_diag.h	2026-10-10 08:59:03
+@@ -14,7 +14,7 @@
+ #define NVDIAG(lim, ...) do { static _Atomic unsigned nvd_c_; const unsigned nvd_k_ = atomic_fetch_add(&nvd_c_, 1); \
+     if (nvd_k_ < (unsigned)(lim) || !(nvd_k_ % 2000)) nvdiag_emit(__VA_ARGS__); } while (0)
+ #define NVSD_N 4096
+-static struct { uint32_t id; uint64_t dirty, out; } g_nvsd[NVSD_N];
++static struct { uint32_t id; uint64_t dirty, out; uint32_t dn, on; } g_nvsd[NVSD_N];
+ static os_unfair_lock g_nvsd_l = OS_UNFAIR_LOCK_INIT;
+ static int nvsd_slot(uint32_t id) {
+     const unsigned h = (id * 2654435761u) % NVSD_N;
+@@ -27,14 +27,18 @@
+     const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+     os_unfair_lock_lock(&g_nvsd_l);
+     const int i = nvsd_slot(id);
+-    if (g_nvsd[i].id != id) { g_nvsd[i].id = id; g_nvsd[i].dirty = g_nvsd[i].out = 0; }
+-    if (what) g_nvsd[i].out = now; else g_nvsd[i].dirty = now;
++    if (g_nvsd[i].id != id) { g_nvsd[i].id = id; g_nvsd[i].dirty = g_nvsd[i].out = 0; g_nvsd[i].dn = g_nvsd[i].on = 0; }
++    // Counted, not timestamped: a publish of frame N that lands after frame N+1 was encoded must not hide N+1's write.
++    if (what) { g_nvsd[i].out = now; if (g_nvsd[i].on < g_nvsd[i].dn) g_nvsd[i].on++; }
++    else { g_nvsd[i].dirty = now; g_nvsd[i].dn++; }
+     os_unfair_lock_unlock(&g_nvsd_l);
+ }
+ static int nvsd_pending(uint32_t id) {
+     if (!id) return 0;
+     os_unfair_lock_lock(&g_nvsd_l);
+-    const int i = nvsd_slot(id); const int p = g_nvsd[i].id == id && g_nvsd[i].dirty > g_nvsd[i].out;
++    const int i = nvsd_slot(id); const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    // The age limit keeps a write that is never published (command buffer dropped) from blocking uploads for good.
++    const int p = g_nvsd[i].id == id && g_nvsd[i].dn > g_nvsd[i].on && now - g_nvsd[i].dirty < 500000000ull;
+     os_unfair_lock_unlock(&g_nvsd_l);
+     return p;
+ }

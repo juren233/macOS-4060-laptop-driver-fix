@@ -1,0 +1,23 @@
+--- a/NVMTLObjects.m
++++ b/NVMTLObjects.m
+@@ -4736,8 +4736,20 @@
+     while (!_completionReady) [_completionCondition wait];
+     [_completionCondition unlock];
+     dispatch_group_wait(_callbackGroup, DISPATCH_TIME_FOREVER);
++}
++// Apps call waitUntilScheduled right before they hand an IOSurface to Core Animation (Chromium: Dawn's
++// WaitForCommandsToBeScheduled / ANGLE's eglWaitUntilWorkScheduledANGLE before the CA transaction). On Apple GPUs queue
++// order then guarantees WindowServer sees finished pixels; here WindowServer's NVK channel is not ordered after this
++// process's, and surfaces in private images only reach the shared pages at completion. So by default "scheduled" waits
++// for completion + publication; otherwise every Chrome element flickers between frames. NVMTL_SCHEDULED_WAIT=0: old.
++static int nvmtl_sched_waits_completion(void) {
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_SCHEDULED_WAIT"); on = !(e && e[0] == '0');
++        nvdiag_emit("waitUntilScheduled %s (NVMTL_SCHEDULED_WAIT=%s)", on ? "waits for completion (IOSurfaces published before CA presents them)" : "returns once submitted", e ? e : "unset"); }
++    return on;
+ }
+ - (void)waitUntilScheduled {
++    if (nvmtl_sched_waits_completion() && _committed) { [self waitUntilCompleted]; return; }
+     _nWait++; [_completionCondition lock];
+     while (!_wasScheduled && !_executionDone) [_completionCondition wait];
+     [_completionCondition unlock];

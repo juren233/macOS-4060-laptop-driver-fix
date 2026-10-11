@@ -1,0 +1,62 @@
+--- NVMTLObjects.h.pre-usecount	2026-10-10 00:42:41
++++ NVMTLObjects.h	2026-10-10 00:42:41
+@@ -267,6 +267,8 @@
+ @interface NVMTLTexture () { @public BOOL _subPlaced, _parkable; uint32_t _pkey[12]; NSUInteger _pkLen; } @end
+ // Surface-in: the IOSurface's pages imported as a GPU buffer (on the root texture) once it is uploaded more than once.
+ @interface NVMTLTexture () { @public nvk_buffer _surfImp; void *_surfImpBase; size_t _surfImpLen; uint32_t _surfUploads; BOOL _surfImpTried; } @end
++// IOSurface use count held while GPU work references the texture (see nvmtl_surf_use in NVMTLObjects.m).
++@interface NVMTLTexture () { @public os_unfair_lock _useLk; BOOL _useHeld; } @end
+ @interface NVMTLHeap () { @public nvmtl_park_t *_pk; uint32_t _npk; } @end
+ @interface NVMTLBuffer () { @public nvmtl_park_t *_bpk; uint32_t _nbpk; os_unfair_lock _bpl; } @end
+ @interface NVMTLTexture () { @public BOOL _bparkable; } @end
+--- NVMTLObjects.m.pre-usecount	2026-10-10 00:42:41
++++ NVMTLObjects.m	2026-10-10 00:42:41
+@@ -137,6 +137,32 @@
+ static void nvmtl_res2_kick(int scan);
+ static _Atomic int gRes2Scan;
+ static Class gNVMTLTexClass;
++// Apple's GPU drivers keep an IOSurface's use count raised while submitted GPU work still reads or writes it; that count is
++// what IOSurfaceIsInUse() reports. Chromium's swap-chain, CVPixelBufferPool (VideoToolbox decoder output) and Core Animation
++// only recycle a surface - write the next frame into it - once it is no longer in use. Without it WindowServer's GPU could
++// still be compositing a surface the app was already redrawing: diagonally torn windows while resizing/scrolling, video
++// frames overwritten under the reader. A texture's command-buffer references (_resRefs, released when the GPU work
++// completes) now hold the count. NVMTL_SURF_USECOUNT=0: off.
++static _Atomic long gSurfUseHeld; static _Atomic unsigned long long gSurfUseOps;
++static int nvmtl_surf_use_on(void) {
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_SURF_USECOUNT"); on = !(e && e[0] == '0');
++        nvdiag_emit("IOSurface use count %s while GPU work references the surface (NVMTL_SURF_USECOUNT=%s)", on ? "held" : "NOT held", e ? e : "unset"); }
++    return on;
++}
++static void nvmtl_surf_use(NVMTLTexture *t) {
++    if (!t->_surf || !nvmtl_surf_use_on()) return;
++    os_unfair_lock_lock(&t->_useLk);
++    const BOOL want = __atomic_load_n(&t->_resRefs, __ATOMIC_ACQUIRE) > 0;
++    if (want != t->_useHeld) {
++        if (want) IOSurfaceIncrementUseCount(t->_surf); else IOSurfaceDecrementUseCount(t->_surf);
++        t->_useHeld = want;
++        const long h = want ? atomic_fetch_add(&gSurfUseHeld, 1) + 1 : atomic_fetch_sub(&gSurfUseHeld, 1) - 1;
++        const unsigned long long k = atomic_fetch_add(&gSurfUseOps, 1) + 1;
++        if (!(k & (k - 1)) || !(k % 100000)) nvdiag_emit("IOSurface use count: %llu transitions, %ld surfaces held in use now", k, h);
++    }
++    os_unfair_lock_unlock(&t->_useLk);
++}
+ static inline void nvmtl_resref(id o, int d) {
+     if (!gNVMTLTexClass) gNVMTLTexClass = [NVMTLTexture class];
+     if (![o isKindOfClass:gNVMTLTexClass]) {
+@@ -150,6 +176,7 @@
+     }
+     NVMTLTexture *t = o; if (t->_parent) t = t->_parent;
+     const int v = __atomic_add_fetch(&t->_resRefs, d, __ATOMIC_ACQ_REL);
++    if (t->_surf && (d > 0 ? v == 1 : v == 0)) nvmtl_surf_use(t);
+     if (d > 0) { __atomic_store_n(&t->_useEp, nvmtl_ep_now(), __ATOMIC_RELEASE); nvmtl_res3_wait_move(&t->_rstate);
+                  nvmtl_res2_note_use(t); }
+     else if (v == 0 && __atomic_load_n(&t->_wantOn, __ATOMIC_ACQUIRE)) nvmtl_res2_kick(1);
+@@ -1022,6 +1049,7 @@
+     if (!_parent) nvmtl_vk_image_destroy(&_i);
+     if (!_parent && _vramOn) { nvmtl_vk_buffer_destroy(&_vramBuf); _vramOn = NO; }
+     if (!_parent && _surfImp.buf) { nvmtl_vk_buffer_destroy(&_surfImp); atomic_fetch_sub(&gSurfImpBytes, _surfImpLen); _surfImpLen = 0; }
++    if (_useHeld && _surf) { IOSurfaceDecrementUseCount(_surf); _useHeld = NO; atomic_fetch_sub(&gSurfUseHeld, 1); }
+     if (_surfOwned && _surf) CFRelease(_surf);
+     free(_cpyShadow); _cpyShadow = NULL; _cpyBuf = nil;
+     if (_subHeap) { NVMTLHeap *h = _subHeap; NSUInteger c = _subCharge; _subHeap = nil; _subCharge = 0;

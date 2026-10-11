@@ -1,0 +1,186 @@
+--- NVMTLDevice.m.pre-diag	2026-10-09 02:49:38
++++ NVMTLDevice.m	2026-10-09 03:52:23
+@@ -21,6 +21,7 @@
+ #include <time.h>
+ #include "nvmtl_sample_positions.h"
+ #include "nvmtl_log_failure.h"
++#include "nvmtl_diag.h"
+ #include <sys/sysctl.h>
+ #ifndef NVMTL_RELEASE
+ #define NVMTL_RELEASE 0
+@@ -678,7 +679,15 @@
+ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInteger plane, uint32_t w, uint32_t h,
+                                       uint32_t vkf, uint32_t bpp, int a8, int stex)
+ {
+-    if (surf && plane == 0 && IOSurfaceGetPlaneCount(surf) <= 1 && nvmtl_vk_surface_share_on()) {
++    // NVMTL_SURF_SHARE_MINPX=N (nvrm610.conf): only IOSurfaces of at least N pixels live in the shared linear VRAM. Display
++    // framebuffers must (the zero-copy flip scans that VRAM out); smaller ones - layer caches WindowServer renders into - are
++    // drawn wrong as linear images (black Finder sidebar header, octagonal selection, black corners), so they get a private
++    // tiled image synced through the surface's pages like before surface sharing.
++    static long minpx = -1;
++    if (minpx < 0) { const char *e = getenv("NVMTL_SURF_SHARE_MINPX"); minpx = e && *e ? atol(e) : 0; if (minpx < 0) minpx = 0;
++        nvdiag_emit("IOSurface sharing: surfaces of >= %ld pixels share linear VRAM, smaller ones get private images (NVMTL_SURF_SHARE_MINPX=%s)", minpx, e ?: "unset"); }
++    const int bigEnough = !surf || (long)(IOSurfaceGetWidth(surf) * IOSurfaceGetHeight(surf)) >= minpx;
++    if (surf && plane == 0 && IOSurfaceGetPlaneCount(surf) <= 1 && bigEnough && nvmtl_vk_surface_share_on()) {
+         size_t row = IOSurfaceGetBytesPerRow(surf), sh = IOSurfaceGetHeight(surf);
+         if ((size_t)w * (bpp ? bpp : 4) <= row && h <= sh && row % 32 == 0) {
+             nvk_buffer vb;
+@@ -688,6 +697,8 @@
+                     uint32_t seed = IOSurfaceGetSeed(surf);
+                     int current = nvmtl_vram_tag_current(surf, 0, seed);
+                     if (current) { t->_surfSeed = seed; t->_surfSynced = YES; }
++                    NVDIAG(150, "surf create %u %ux%u pitch %zu fmt %u -> shared VRAM%s seed %u", (unsigned)IOSurfaceGetID(surf), w, h, row, vkf,
++                           current ? " (tag current)" : "", seed);
+                     static unsigned n; if (n++ < 8 || n % 2000 == 0)
+                         nvlog("item 7: surface %u %ux%u pitch %zu -> the family's VRAM%s (vram %llu, private %llu)", (unsigned)IOSurfaceGetID(surf),
+                               w, h, row, current ? ", already current (no upload)" : "", g_surf_vram, g_surf_private);
+@@ -698,6 +709,8 @@
+         }
+     }
+     g_surf_private++;
++    if (surf) NVDIAG(150, "surf create %u %ux%u (surface %zux%zu pitch %zu planes %zu) fmt %u -> PRIVATE image", (unsigned)IOSurfaceGetID(surf), w, h,
++                     IOSurfaceGetWidth(surf), IOSurfaceGetHeight(surf), IOSurfaceGetBytesPerRow(surf), IOSurfaceGetPlaneCount(surf), vkf);
+     return nvmtl_vk_image_create_typed(w, h, vkf, bpp, a8, 1, stex, 2u, 1u, &t->_i);
+ }
+ 
+@@ -706,6 +719,24 @@
+     size_t w = d.width, h = d.height;
+     if (!w || !h || w > UINT32_MAX || h > UINT32_MAX) return nil;
+     if (surf && plane >= MAX((size_t)1, IOSurfaceGetPlaneCount(surf))) return nil;
++    // A surface kept out of the shared VRAM gets a private image. Every texture this process makes on the same surface
++    // must then use that ONE image (as a view of it): separate private images would only meet through the surface's CPU
++    // pages, which hold the GPU's writes only after they complete - a texture made in between reads old pixels.
++    static NSMapTable *privRoots; static os_unfair_lock privLock = OS_UNFAIR_LOCK_INIT;
++    NSString *privKey = surf ? [NSString stringWithFormat:@"%u:%lu:%zux%zu", (unsigned)IOSurfaceGetID(surf), (unsigned long)plane, w, h] : nil;
++    if (privKey && d.textureType == MTLTextureType2D && d.mipmapLevelCount <= 1) {
++        NVMTLTexture *root = nil;
++        os_unfair_lock_lock(&privLock); root = [privRoots objectForKey:privKey]; os_unfair_lock_unlock(&privLock);
++        if (root && root->_surf == surf && !root->_vramOn && (!(d.usage & MTLTextureUsageShaderWrite) || root->_stex)) {
++            NVMTLTexture *v = (NVMTLTexture *)[root newTextureViewWithPixelFormat:d.pixelFormat];
++            if (v) { v->_viewParent = nil; v->_usage = d.usage; v->_fbo = nvmtl_desc_fbo(d);
++                v->_ropt = (MTLResourceOptions)d.cpuCacheMode | ((MTLResourceOptions)d.hazardTrackingMode << MTLResourceHazardTrackingModeShift)
++                         | ((MTLResourceOptions)d.storageMode << MTLResourceStorageModeShift);
++                NVDIAG(150, "surf %u %zux%zu fmt %lu: reuses this process's private image of the surface (one image per surface)",
++                       (unsigned)IOSurfaceGetID(surf), w, h, (unsigned long)d.pixelFormat);
++                return v; }
++        }
++    }
+     NVMTLTexture *t = [NVMTLTexture new];
+     t->_ropt = (MTLResourceOptions)d.cpuCacheMode | ((MTLResourceOptions)d.hazardTrackingMode << MTLResourceHazardTrackingModeShift)
+              | ((MTLResourceOptions)d.storageMode << MTLResourceStorageModeShift);
+@@ -715,6 +746,11 @@
+     int wantStex = (d.usage & MTLTextureUsageShaderWrite) != 0;
+     if (nvmtl_surface_image_create(t, surf, plane, (uint32_t)w, (uint32_t)h, vkf, bpp, a8, wantStex)) {
+         nvlog("newTextureWithDescriptor:iosurface:plane: image create FAILED (%zux%zu)", w, h); return nil; }
++    if (privKey && !t->_vramOn && d.textureType == MTLTextureType2D && d.mipmapLevelCount <= 1) {
++        os_unfair_lock_lock(&privLock);
++        if (!privRoots) privRoots = [NSMapTable strongToWeakObjectsMapTable];
++        [privRoots setObject:t forKey:privKey];
++        os_unfair_lock_unlock(&privLock); }
+     t->_q = nvmtl_device_queue();
+     t->_surf = surf; if (surf) { CFRetain(surf); t->_surfOwned = YES; }
+     t->_plane = plane;
+--- NVMTLObjects.m.pre-diag	2026-10-09 02:49:38
++++ NVMTLObjects.m	2026-10-09 03:55:03
+@@ -871,6 +871,7 @@
+     if (!r->_surf) return;
+     if (!cb->_surfDirty) cb->_surfDirty = [NSMutableSet new];
+     [cb->_surfDirty addObject:r];
++    nvsd_mark((uint32_t)IOSurfaceGetID(r->_surf), 0);
+ }
+ static int g_trace_lines;
+ static int g_trace_bigonly, g_trace_mute;
+@@ -1065,10 +1066,25 @@
+     if (r->_surfSynced && IOSurfaceGetSeed(r->_surf) == r->_surfSeed && (r->_vramOn || vgen == r->_surfGen)) return;
+     if (![r nvmtlSurfaceCopyable]) return;
+     { uint32_t now = IOSurfaceGetSeed(r->_surf);
++      if (r->_vramOn && nvsd_guard_on() && nvsd_pending((uint32_t)IOSurfaceGetID(r->_surf))) {
++          // This process has GPU writes to the surface's VRAM queued or running; the CPU pages are older than what they will
++          // leave there, and uploading them now would overwrite (or race) those writes. The surface-out after they complete
++          // publishes them.
++          r->_surfSeed = now; r->_surfSynced = YES;
++          NVDIAG(200, "surfin GUARD: surf %u %ux%u has GPU writes in flight - CPU upload over its VRAM skipped (seed %u)",
++                 (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h, now);
++          return; }
+       if (r->_vramOn && nvmtl_vram_tag_current(r->_surf, r->_plane, now)) {
+           r->_surfSeed = now; r->_surfSynced = YES; g_surfin_skip++;
+           static unsigned ns; if (ns++ < 6 || ns % 2000 == 0) nvlog("item 7: surface-in SKIPPED (shared VRAM current at seed %u): %llu skipped, %llu copied", now, g_surfin_skip, g_surfin_copy);
+           return; } }
++    { const uint32_t sid = (uint32_t)IOSurfaceGetID(r->_surf), now = IOSurfaceGetSeed(r->_surf);
++      CFStringRef k = CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), (unsigned long)r->_plane); CFTypeRef v = IOSurfaceCopyValue(r->_surf, k); CFRelease(k);
++      uint32_t tg[3] = { 0, 0, 0 }; if (v && CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) == (CFIndex)sizeof tg) memcpy(tg, CFDataGetBytePtr((CFDataRef)v), sizeof tg);
++      if (v) CFRelease(v);
++      NVDIAG(400, "surfin UPLOAD %s surf %u %ux%u fmt %u: seed now %u, tag %s seed %u gen %u, texture synced %d at seed %u, GPU writes in flight %d",
++             r->_vramOn ? "over shared VRAM" : "into private image", sid, r->_i.w, r->_i.h, r->_i.fmt, now,
++             tg[0] == 0x564d5634u ? "ok" : "none", tg[1], tg[2], r->_surfSynced, r->_surfSeed, nvsd_pending(sid)); }
+     uint32_t seed = 0;
+     if (IOSurfaceLock(r->_surf, kIOSurfaceLockReadOnly, &seed) != kIOReturnSuccess) { nvlog("G13 surface-in: IOSurfaceLock FAILED"); return; }
+     void *base = IOSurfaceGetBaseAddressOfPlane(r->_surf, (uint32_t)r->_plane);
+@@ -1082,8 +1098,17 @@
+     static unsigned n; if (n++ < 6 || n % 2000 == 0) nvlog("G13 surface-in #%u: %ux%u surface %p seed %u uploaded", n, r->_i.w, r->_i.h, (void *)r->_surf, seed);
+ }
+ - (BOOL)nvmtlSurfaceOut {
++    // The writes count as published only once the surface's tag / CPU pages say so; marking them done any earlier lets a
++    // texture made in between upload the old CPU pages over them.
++    const BOOL ok = [self nvmtlSurfaceOutPublish];
++    NVMTLTexture *r = _parent ? _parent : self;
++    if (r->_surf) nvsd_mark((uint32_t)IOSurfaceGetID(r->_surf), 1);
++    return ok;
++}
++- (BOOL)nvmtlSurfaceOutPublish {
+     NVMTLTexture *r = _parent ? _parent : self;
+     if (!r->_surf) return YES;
++    NVDIAG(100, "surfout surf %u %ux%u %s seed %u", (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h, r->_vramOn ? "shared VRAM" : "private", IOSurfaceGetSeed(r->_surf));
+     if (![r nvmtlSurfaceCopyable]) return NO;
+     if (r->_vramOn && !nvmtl_vk_surface_dirty((uint32_t)IOSurfaceGetID(r->_surf), (uint32_t)r->_plane)) {
+         uint32_t seed = IOSurfaceGetSeed(r->_surf);
+--- /dev/null	2026-10-09 03:55:21
++++ nvmtl_diag.h	2026-10-09 02:49:38
+@@ -0,0 +1,47 @@
++// IOSurface diagnostics that reach the system log even in a release build (tag "NullMoth-diag"), plus a per-surface record
++// of this process's GPU writes so a surface-in can tell when the shared VRAM is about to receive newer GPU contents.
++#pragma once
++#include <syslog.h>
++#include <stdarg.h>
++#include <stdatomic.h>
++#include <os/lock.h>
++#include <time.h>
++static void nvdiag_emit(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++static void nvdiag_emit(const char *fmt, ...) {
++    char b[600]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a);
++    syslog(LOG_ERR, "NullMoth-diag: %s", b);
++}
++#define NVDIAG(lim, ...) do { static _Atomic unsigned nvd_c_; const unsigned nvd_k_ = atomic_fetch_add(&nvd_c_, 1); \
++    if (nvd_k_ < (unsigned)(lim) || !(nvd_k_ % 2000)) nvdiag_emit(__VA_ARGS__); } while (0)
++#define NVSD_N 4096
++static struct { uint32_t id; uint64_t dirty, out; } g_nvsd[NVSD_N];
++static os_unfair_lock g_nvsd_l = OS_UNFAIR_LOCK_INIT;
++static int nvsd_slot(uint32_t id) {
++    const unsigned h = (id * 2654435761u) % NVSD_N;
++    for (unsigned k = 0; k < 32; k++) { const unsigned i = (h + k) % NVSD_N; if (g_nvsd[i].id == id || !g_nvsd[i].id) return (int)i; }
++    return (int)h;
++}
++// what: 0 = a GPU write was encoded, 1 = the writes were published (surface-out after completion)
++static void nvsd_mark(uint32_t id, int what) {
++    if (!id) return;
++    const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    os_unfair_lock_lock(&g_nvsd_l);
++    const int i = nvsd_slot(id);
++    if (g_nvsd[i].id != id) { g_nvsd[i].id = id; g_nvsd[i].dirty = g_nvsd[i].out = 0; }
++    if (what) g_nvsd[i].out = now; else g_nvsd[i].dirty = now;
++    os_unfair_lock_unlock(&g_nvsd_l);
++}
++static int nvsd_pending(uint32_t id) {
++    if (!id) return 0;
++    os_unfair_lock_lock(&g_nvsd_l);
++    const int i = nvsd_slot(id); const int p = g_nvsd[i].id == id && g_nvsd[i].dirty > g_nvsd[i].out;
++    os_unfair_lock_unlock(&g_nvsd_l);
++    return p;
++}
++static int nvsd_guard_on(void) {
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_SURFIN_GUARD"); on = !(e && e[0] == '0');
++        nvdiag_emit("surface-in guard %s (NVMTL_SURFIN_GUARD=%s): a texture over shared IOSurface VRAM that this process has GPU writes "
++                    "in flight for does %s upload the surface's CPU pages over it", on ? "ON" : "off", e ? e : "unset", on ? "NOT" : "still"); }
++    return on;
++}
