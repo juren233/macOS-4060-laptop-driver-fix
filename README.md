@@ -103,7 +103,7 @@ docs/                     详细文档
 - 对 NullMoth 插件/内核扩展的补丁：随上游 **PolyForm Noncommercial 1.0.0**（仅限非商业用途），见 [LICENSE-PolyForm-Noncommercial-1.0.0.txt](LICENSE-PolyForm-Noncommercial-1.0.0.txt)。
 - 对翻译器（metal2vulkan 衍生）的补丁：**LGPL-3.0-or-later**，见 [LICENSE-LGPL-3.0.txt](LICENSE-LGPL-3.0.txt)。
 - 对 VoodooGPIO / VoodooI2C 的补丁：沿用其上游许可（GPL-3.0 / BSD 类）。
-- Lilu 插件源码（`backlight/NVDSM`、`wifibt/BTLEFix`）：因依赖 Lilu，按 **GPL-3.0** 提供，见 [LICENSE-GPL-3.0.txt](LICENSE-GPL-3.0.txt)。
-- 本仓库作者原创的其余脚本、测试、文档：**MIT**，见 [LICENSE-MIT.txt](LICENSE-MIT.txt)。
+- Lilu 插件源码（`backlight/NVDSM`、`wifibt/BTLEFix`）：因依赖 Lilu，按 **GPL-3.0** 提供，见 [LICENSE](LICENSE)。
+- 本仓库作者原创的其余脚本、测试、文档：**GPL-3.0**，见 [LICENSE](LICENSE)。
 
 详见 [NOTICE.md](NOTICE.md)。本项目与 NullMoth Systems、NVIDIA、Apple 无任何关联。

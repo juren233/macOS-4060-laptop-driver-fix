@@ -68,4 +68,4 @@ Details (Chinese): [docs/fixes.md](docs/fixes.md) · Pitfalls: [docs/pitfalls.md
 ## Licensing
 
 Patches to NullMoth plugin/kexts: PolyForm Noncommercial 1.0.0 (non-commercial use only). Translator patches: LGPL-3.0-or-later.
-Lilu plugins: GPL-3.0. Everything else: MIT. See [NOTICE.md](NOTICE.md). Not affiliated with NullMoth Systems, NVIDIA or Apple.
+Lilu plugins and everything else the author wrote: GPL-3.0 (see [LICENSE](LICENSE)). Patch files keep the license of the upstream project they modify. See [NOTICE.md](NOTICE.md). Not affiliated with NullMoth Systems, NVIDIA or Apple.
