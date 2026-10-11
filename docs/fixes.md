@@ -191,6 +191,14 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - 修复：boot-arg `ipc_control_port_options=0`（对所有进程关闭 immovable/pinned 控制端口，有安全代价）。`wifibt/oc-bootarg.sh add ipc_control_port_options=0` 后重启。
   **NVRAM 里的 boot-args 会被 OpenCore 按 ESP 配置重写，所以必须改 ESP 的配置，不能 `nvram boot-args=…`。**
 
+### 21. 光标移动时偶发闪回旧画面（预防性）
+- 现象（上游报告，本机未复现）：零拷贝翻转开启后，移动鼠标时偶尔有旧画面闪一下；`-nvrmnoflip` 后消失。
+- 根因：NVRMFB 的 `cursorApply()` 提交光标时顺带把主画面（`fFrontSurf`）也提交一遍，于是每次光标移动都是一次主画面翻转，并按垂直同步节拍；如果零拷贝翻转恰在读取 `fFrontSurf` 与提交之间锁存了更新的帧，旧帧会被放回屏幕，直到下一次翻转。
+- 修复：移植上游 1.13.0 的做法——光标提交只带光标，`submitConfig(…, cursorOnly=true)` 跳过主层。补丁 `patches/nullmoth-1.9.0/0005-nvrmfb-cursor-only.patch`（叠加在 0004 之后）。
+- 验证：作者本机编译安装后重启，HiDPI@165Hz、零拷贝计数、亮度、睡眠唤醒均正常。内核扩展安装有重启和黑屏风险，先备份并准备恢复模式回滚。
+
+---
+
 ---
 
 ## 八、已排除：不是驱动的问题
@@ -206,3 +214,11 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 
 插件版本链：v46 → v47（持久化 pipeline cache）→ v48（合入上游 1.9.0：采样器负 LOD、`shaderDrawParameters`、GL zero-net、翻译器的 base_vertex/base_instance；260/260 缓存着色器逐字节一致）→ tiled 渲染影子 → selffetch → gl-sample-positions；翻译器：`761a54b4`（顶点输出）→ `eb4fb6a3`（Lanczos）。
 `nvguard/` 里记录的哈希就是这些构建的 sha256（你自己的构建哈希不会相同）。
+
+## 九、1.13.0 用户态补丁集
+
+`patches/nullmoth-1.13.0/` 是把插件和翻译器的本地修改重新整理到**上游 v1.13.0** 之上的差异（已验证可在原版 v1.13.0 上干净应用，应用后的插件和翻译器可编译，并通过 `hidpi/catest/` 里的回归程序）。和 1.9.0 版相比：
+- 上游 1.13 已吸收的内容（视口深度夹紧等）不再出现在补丁里。
+- 额外一处本地改动：1.13 只在 Blackwell 上注册 NVENC，Ada 上我们的 NVENC 补丁（修复 15）会被绕开，所以插件默认在所有 GPU 上注册，设置环境变量 `NVMTL_NVENC_BLACKWELL_ONLY` 才恢复上游行为。
+- **没有**移植 1.13 的内核扩展（NVRM 的 HiDPI 26 字节补丁和 NVK 二进制补丁需要针对 1.13 重新推导，风险高，收益有限）。内核扩展仍以 1.9.0 为基线。
+

@@ -19,6 +19,9 @@ git clone https://github.com/nullmoth/nvidia-macos-driver && cd nvidia-macos-dri
 git checkout v1.9.0
 P=/path/to/this-repo/patches/nullmoth-1.9.0
 git apply $P/0001-plugin.patch $P/0002-translator.patch $P/0003-nvrm-flip-at-once.patch $P/0004-nvrmfb-backlight.patch
+# 可选（修复 21，光标只提交光标；内核扩展，装前先读下面的风险）：
+git apply $P/0005-nvrmfb-cursor-only.patch
+# 想基于 v1.13.0 只做用户态（插件 + 翻译器）：git checkout v1.13.0，再 git apply patches/nullmoth-1.13.0/0001-plugin.patch patches/nullmoth-1.13.0/0002-translator.patch
 ```
 四个补丁已验证可在原版 v1.9.0 上干净应用，且打补丁后的插件可编译。`translator/translator/Cargo.lock` 没有包含在补丁里（作者离线构建时被精简）。
 `per-fix/` 里的是各修复的独立 diff，用来阅读，**不要**按顺序叠加。

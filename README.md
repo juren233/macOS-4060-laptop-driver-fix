@@ -42,6 +42,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 18 | 原生 Wi-Fi / 蓝牙 | 无 Sequoia 版 AirportItlwm；macOS 的 bluetoothd 对 AX211 发 LE 命令出错、`Connect` 要点三次 | AirportItlwm-Sequoia + `itlwm_he=1`；`BTLEFix`（Lilu）补丁 bluetoothd 并注入 Random Address / Inquiry Cancel | `wifibt/` |
 | 19 | 触控板整个不动 | ELAN0420 在 I²C 上；VoodooI2C 发行版缺 `51e8` PCI ID，VoodooGPIO 的 TigerLakeLP 类未编译且 `start` 链错 | 三处修改 + `SSDT-PS2KEYS`（Fn+F1 宏、PrtSc） | `trackpad/`、`patches/voodoo/` |
 | 20 | CrossOver/Wine 创建容器被 `EXC_GUARD` 杀 | `amfi_get_out_of_my_way` 使所有进程变“平台二进制”，task port 变不可移动 | boot-arg `ipc_control_port_options=0` | [docs/fixes.md](docs/fixes.md) |
+| 21 | 光标移动时偶发闪回旧画面（预防性，本机未复现） | NVRMFB 光标提交顺带重提交主画面，与零拷贝翻转竞争 | 光标提交只带光标（移植上游 1.13.0） | `patches/…/0005` |
 
 每一项的详细分析、验证方法和注意事项见 **[docs/fixes.md](docs/fixes.md)**。
 
@@ -49,6 +50,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 
 ```
 patches/nullmoth-1.9.0/   对上游 v1.9.0 的累计补丁（plugin / translator / NVRM / NVRMFB）
+patches/nullmoth-1.13.0/  重新整理到上游 v1.13.0 之上的插件 / 翻译器补丁（内核扩展仍以 1.9.0 为基线）
   per-fix/                逐项修复的独立 diff（便于阅读，各自以当时的基线生成，不保证按序可叠加）
 patches/voodoo/           VoodooGPIO 补丁
 kexts/                    NVRM 二进制补丁脚本（head-scaler + 启动即翻转）、1.9.0 内核扩展安装/回滚

@@ -1,0 +1,2061 @@
+diff --git a/plugin/NVMTLDevice.m b/plugin/NVMTLDevice.m
+index 0a9e78e..cbd4ad8 100644
+--- a/plugin/NVMTLDevice.m
++++ b/plugin/NVMTLDevice.m
+@@ -13,6 +13,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <syslog.h>
++#include "nvmtl_oslog.h"
+ #include <unistd.h>
+ #include <stdint.h>
+ #include <vulkan/vulkan_core.h>
+@@ -21,6 +22,8 @@
+ #include <time.h>
+ #include "nvmtl_sample_positions.h"
+ #include "nvmtl_log_failure.h"
++#include "nvmtl_diag.h"
++#include "nvmtl_bindfix.h"
+ #include <sys/sysctl.h>
+ #ifndef NVMTL_RELEASE
+ #define NVMTL_RELEASE 0
+@@ -100,7 +103,7 @@ void nvlog(const char *fmt, ...) {
+     if (rep) snprintf(t, sizeof t, "%s   [logged %llu times now]", b, (unsigned long long)rep);
+     else     snprintf(t, sizeof t, "%s", b);
+ #if NVMTL_RELEASE
+-    if (nvmtl_log_failure(t)) syslog(LOG_ERR, "NullMoth: %s", t);
++    if (nvmtl_log_failure(t) || g_nvos_stderr) syslog(LOG_ERR, "NullMoth: %s", t);
+ #else
+     syslog(LOG_NOTICE, "NVMTL: %s", t);
+     FILE *f = fopen(nvmtl_log_path(), "a"); if (f) { fprintf(f, "pid %d NVMTL: %s\n", getpid(), t); fclose(f); }
+@@ -200,6 +203,7 @@ static void nvmtl_nvdec_register(void)
+         snprintf(path, sizeof path, "%s/%s", dirname(dir), nvmtl_video_is_blackwell() ? "libnvdec_h264.dylib" : "libnvdec_h264_t2d.dylib");
+         void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+         if (!h) { nvlog("nvdec: dlopen %s FAILED: %s", path, dlerror()); return; }
++        nvbf_install_extra(path);
+         void *fac = dlsym(h, "NVDecH264_CreateInstance");
+         if (!fac) { nvlog("nvdec: %s has no NVDecH264_CreateInstance", path); return; }
+         NSDictionary *info = @{ @"CMClassImplementationID": @"com.nvmtl.videodecoder.avc.nvdec",
+@@ -215,7 +219,9 @@ static void nvmtl_nvenc_register(void)
+     dispatch_once(&once, ^{
+         const char *me = getprogname();
+         if (getenv("NVMTL_NO_NVENC")) { nvlog("nvenc: NVMTL_NO_NVENC set - not registering in %s", me); return; }
+-        if (!nvmtl_video_is_blackwell()) { nvlog("nvenc: %s is not Blackwell - H.264 encode stays on Apple's encoder", nvmtl_vk_device_name()); return; }
++        // LOCAL: upstream 1.13 registers NVENC on Blackwell only. Our libnvenc_*.dylib carry the t2d/NotSync/rate-control patches for Ada (UU Remote),
++        // so register everywhere unless NVMTL_NVENC_BLACKWELL_ONLY is set.
++        if (getenv("NVMTL_NVENC_BLACKWELL_ONLY") && !nvmtl_video_is_blackwell()) { nvlog("nvenc: %s is not Blackwell - H.264 encode stays on Apple's encoder", nvmtl_vk_device_name()); return; }
+         if (!strcmp(me, "WindowServer")) return;
+         typedef int32_t (*RegFn)(uint32_t, CFDictionaryRef, void *);
+         RegFn reg = (RegFn)dlsym(RTLD_DEFAULT, "VTRegisterVideoEncoderWithInfo");
+@@ -227,6 +233,7 @@ static void nvmtl_nvenc_register(void)
+         snprintf(path, sizeof path, "%s/libnvenc_h264.dylib", dirname(dir));
+         void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+         if (!h) { nvlog("nvenc: dlopen %s FAILED: %s", path, dlerror()); return; }
++        nvbf_install_extra(path);
+         void *fac = dlsym(h, "NVEncH264_CreateInstance");
+         if (!fac) { nvlog("nvenc: %s has no NVEncH264_CreateInstance", path); return; }
+         NSDictionary *info = @{ @"CMClassImplementationID": @"com.nvmtl.videoencoder.avc.nvenc",
+@@ -254,6 +261,7 @@ static void nvmtl_nvdec_hevc_register(void)
+         snprintf(path, sizeof path, "%s/libnvdec_hevc.dylib", dirname(dir));
+         void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+         if (!h) { nvlog("nvdec: dlopen %s FAILED: %s", path, dlerror()); return; }
++        nvbf_install_extra(path);
+         void *fac = dlsym(h, "NVDecHEVC_CreateInstance");
+         if (!fac) { nvlog("nvdec: %s has no NVDecHEVC_CreateInstance", path); return; }
+         NSDictionary *info = @{ @"CMClassImplementationID": @"com.nvmtl.videodecoder.hevc.nvdec",
+@@ -269,7 +277,9 @@ static void nvmtl_nvenc_hevc_register(void)
+     dispatch_once(&once, ^{
+         const char *me = getprogname();
+         if (getenv("NVMTL_NO_NVENC_HEVC")) { nvlog("nvenc: NVMTL_NO_NVENC_HEVC set - not registering HEVC in %s", me); return; }
+-        if (!nvmtl_video_is_blackwell()) { nvlog("nvenc: %s is not Blackwell - HEVC encode stays on Apple's encoder", nvmtl_vk_device_name()); return; }
++        // LOCAL: upstream 1.13 registers NVENC on Blackwell only. Our libnvenc_*.dylib carry the t2d/NotSync/rate-control patches for Ada (UU Remote),
++        // so register everywhere unless NVMTL_NVENC_BLACKWELL_ONLY is set.
++        if (getenv("NVMTL_NVENC_BLACKWELL_ONLY") && !nvmtl_video_is_blackwell()) { nvlog("nvenc: %s is not Blackwell - HEVC encode stays on Apple's encoder", nvmtl_vk_device_name()); return; }
+         if (!strcmp(me, "WindowServer")) return;
+         typedef int32_t (*RegFn)(uint32_t, CFDictionaryRef, void *);
+         RegFn reg = (RegFn)dlsym(RTLD_DEFAULT, "VTRegisterVideoEncoderWithInfo");
+@@ -281,6 +291,7 @@ static void nvmtl_nvenc_hevc_register(void)
+         snprintf(path, sizeof path, "%s/libnvenc_hevc.dylib", dirname(dir));
+         void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+         if (!h) { nvlog("nvenc: dlopen %s FAILED: %s", path, dlerror()); return; }
++        nvbf_install_extra(path);
+         void *fac = dlsym(h, "NVEncHEVC_CreateInstance");
+         if (!fac) { nvlog("nvenc: %s has no NVEncHEVC_CreateInstance", path); return; }
+         NSDictionary *info = @{ @"CMClassImplementationID": @"com.nvmtl.videoencoder.hevc.nvenc",
+@@ -374,6 +385,7 @@ - (instancetype)initWithAcceleratorPort:(mach_port_t)port {
+         nvlog("  NVK did not come up in this process - refusing to be the Metal device for %s", getprogname());
+         return nil;
+     }
++    if (!strcmp(getprogname(), "VTDecoderXPCService")) nvbf_watch_sw();
+     nvmtl_nvdec_register();
+     nvmtl_nvenc_register();
+     nvmtl_nvdec_hevc_register();
+@@ -698,7 +710,15 @@ static void nvmtl_vram_tag_set(IOSurfaceRef surf, NSUInteger plane, uint32_t see
+ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInteger plane, uint32_t w, uint32_t h,
+                                       uint32_t vkf, uint32_t bpp, int a8, int stex)
+ {
+-    if (surf && plane == 0 && IOSurfaceGetPlaneCount(surf) <= 1 && nvmtl_vk_surface_share_on()) {
++    // NVMTL_SURF_SHARE_MINPX=N (nvrm610.conf): only IOSurfaces of at least N pixels live in the shared linear VRAM. Display
++    // framebuffers must (the zero-copy flip scans that VRAM out); smaller ones - layer caches WindowServer renders into - are
++    // drawn wrong as linear images (black Finder sidebar header, octagonal selection, black corners), so they get a private
++    // tiled image synced through the surface's pages like before surface sharing.
++    static long minpx = -1;
++    if (minpx < 0) { const char *e = getenv("NVMTL_SURF_SHARE_MINPX"); minpx = e && *e ? atol(e) : 0; if (minpx < 0) minpx = 0;
++        nvdiag_emit("IOSurface sharing: surfaces of >= %ld pixels share linear VRAM, smaller ones get private images (NVMTL_SURF_SHARE_MINPX=%s)", minpx, e ?: "unset"); }
++    const int bigEnough = !surf || (long)(IOSurfaceGetWidth(surf) * IOSurfaceGetHeight(surf)) >= minpx;
++    if (surf && plane == 0 && IOSurfaceGetPlaneCount(surf) <= 1 && bigEnough && nvmtl_vk_surface_share_on()) {
+         size_t row = IOSurfaceGetBytesPerRow(surf), sh = IOSurfaceGetHeight(surf);
+         if ((size_t)w * (bpp ? bpp : 4) <= row && h <= sh && row % 32 == 0) {
+             nvk_buffer vb;
+@@ -708,6 +728,9 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
+                     uint32_t seed = IOSurfaceGetSeed(surf);
+                     int current = nvmtl_vram_tag_current(surf, 0, seed);
+                     if (current) { t->_surfSeed = seed; t->_surfSynced = YES; }
++                    NVDIAG(150, "surf create %u %ux%u pitch %zu fmt %u -> shared VRAM%s seed %u", (unsigned)IOSurfaceGetID(surf), w, h, row, vkf,
++                           current ? " (tag current)" : "", seed);
++                    if (NVBIG_RANGE(w, h)) nvbig("CREATE surf %u %ux%u pitch %zu fmt %u shared VRAM, seed %u%s", (unsigned)IOSurfaceGetID(surf), w, h, row, vkf, seed, current ? " (tag current)" : " (tag not current)");
+                     static unsigned n; if (n++ < 8 || n % 2000 == 0)
+                         nvlog("item 7: surface %u %ux%u pitch %zu -> the family's VRAM%s (vram %llu, private %llu)", (unsigned)IOSurfaceGetID(surf),
+                               w, h, row, current ? ", already current (no upload)" : "", g_surf_vram, g_surf_private);
+@@ -718,6 +741,9 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
+         }
+     }
+     g_surf_private++;
++    if (surf && IOSurfaceGetPlaneCount(surf) > 1) syslog(LOG_ERR, "NullMoth-diag: VIDEO surf %u plane %lu texture %ux%u fmt %u created (surface %zux%zu)", (unsigned)IOSurfaceGetID(surf), (unsigned long)plane, w, h, vkf, IOSurfaceGetWidth(surf), IOSurfaceGetHeight(surf));
++    if (surf) NVDIAG(150, "surf create %u %ux%u (surface %zux%zu pitch %zu planes %zu) fmt %u -> PRIVATE image", (unsigned)IOSurfaceGetID(surf), w, h,
++                     IOSurfaceGetWidth(surf), IOSurfaceGetHeight(surf), IOSurfaceGetBytesPerRow(surf), IOSurfaceGetPlaneCount(surf), vkf);
+     return nvmtl_vk_image_create_typed(w, h, vkf, bpp, a8, 1, stex, 2u, 1u, &t->_i);
+ }
+ 
+@@ -726,6 +752,24 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
+     size_t w = d.width, h = d.height;
+     if (!w || !h || w > UINT32_MAX || h > UINT32_MAX) return nil;
+     if (surf && plane >= MAX((size_t)1, IOSurfaceGetPlaneCount(surf))) return nil;
++    // A surface kept out of the shared VRAM gets a private image. Every texture this process makes on the same surface
++    // must then use that ONE image (as a view of it): separate private images would only meet through the surface's CPU
++    // pages, which hold the GPU's writes only after they complete - a texture made in between reads old pixels.
++    static NSMapTable *privRoots; static os_unfair_lock privLock = OS_UNFAIR_LOCK_INIT;
++    NSString *privKey = surf ? [NSString stringWithFormat:@"%u:%lu:%zux%zu", (unsigned)IOSurfaceGetID(surf), (unsigned long)plane, w, h] : nil;
++    if (privKey && d.textureType == MTLTextureType2D && d.mipmapLevelCount <= 1) {
++        NVMTLTexture *root = nil;
++        os_unfair_lock_lock(&privLock); root = [privRoots objectForKey:privKey]; os_unfair_lock_unlock(&privLock);
++        if (root && root->_surf == surf && !root->_vramOn && (!(d.usage & MTLTextureUsageShaderWrite) || root->_stex)) {
++            NVMTLTexture *v = (NVMTLTexture *)[root newTextureViewWithPixelFormat:d.pixelFormat];
++            if (v) { v->_viewParent = nil; v->_usage = d.usage; v->_fbo = nvmtl_desc_fbo(d);
++                v->_ropt = (MTLResourceOptions)d.cpuCacheMode | ((MTLResourceOptions)d.hazardTrackingMode << MTLResourceHazardTrackingModeShift)
++                         | ((MTLResourceOptions)d.storageMode << MTLResourceStorageModeShift);
++                NVDIAG(150, "surf %u %zux%zu fmt %lu: reuses this process's private image of the surface (one image per surface)",
++                       (unsigned)IOSurfaceGetID(surf), w, h, (unsigned long)d.pixelFormat);
++                return v; }
++        }
++    }
+     NVMTLTexture *t = [NVMTLTexture new];
+     t->_ropt = (MTLResourceOptions)d.cpuCacheMode | ((MTLResourceOptions)d.hazardTrackingMode << MTLResourceHazardTrackingModeShift)
+              | ((MTLResourceOptions)d.storageMode << MTLResourceStorageModeShift);
+@@ -735,6 +779,11 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
+     int wantStex = (d.usage & MTLTextureUsageShaderWrite) != 0;
+     if (nvmtl_surface_image_create(t, surf, plane, (uint32_t)w, (uint32_t)h, vkf, bpp, a8, wantStex)) {
+         nvlog("newTextureWithDescriptor:iosurface:plane: image create FAILED (%zux%zu)", w, h); return nil; }
++    if (privKey && !t->_vramOn && d.textureType == MTLTextureType2D && d.mipmapLevelCount <= 1) {
++        os_unfair_lock_lock(&privLock);
++        if (!privRoots) privRoots = [NSMapTable strongToWeakObjectsMapTable];
++        [privRoots setObject:t forKey:privKey];
++        os_unfair_lock_unlock(&privLock); }
+     t->_q = nvmtl_device_queue();
+     t->_surf = surf; if (surf) { CFRetain(surf); t->_surfOwned = YES; }
+     t->_plane = plane;
+diff --git a/plugin/NVMTLEventSync.m b/plugin/NVMTLEventSync.m
+index a267eb6..efb9e64 100644
+--- a/plugin/NVMTLEventSync.m
++++ b/plugin/NVMTLEventSync.m
+@@ -146,11 +146,19 @@ - (void)nvmtlDispatchHandlers:(NSArray *)handlers scheduled:(BOOL)scheduled {
+         });
+     });
+ }
++/* ===== LOCAL-FIX (this Hackintosh, RTX 4060 / macOS 15): scheduled handlers fire at GPU completion
++ * DO NOT REMOVE, REVERT OR 'SIMPLIFY' when merging upstream NullMoth changes - without it Chrome/Electron (ZCode, Claude...) flicker: Chromium reads the IOSurface as soon as 'scheduled' fires, but here the GPU publishes later.
++ * History: git log in ~/work/nvidia-setup/src/repo (branch local-mods). Installed + guarded by ~/work/system/nvguard. ===== */
++static const char kNVDeferredSched = 0;
+ - (void)nvmtlMarkScheduled {
+     [_completionCondition lock];
+     if (!_wasScheduled) {
+         _wasScheduled = YES; _cbstatus = MTLCommandBufferStatusScheduled;
+         NSArray *handlers = [_scheduledHandlers copy]; [_scheduledHandlers removeAllObjects];
++        // Chromium (Dawn/Graphite, ANGLE) treats "scheduled" as "WindowServer may now read the IOSurface". On Apple GPUs queue order makes that true;
++  // here the surface is only finished (and published) at completion, so handing it over earlier showed older frames (ZCode flicker).
++  { static int late = -1; if (late < 0) { const char *e = getenv("NVMTL_SCHED_AT_COMPLETION"); late = !(e && *e == '0'); }
++          if (late && handlers.count) { objc_setAssociatedObject(self, &kNVDeferredSched, handlers, OBJC_ASSOCIATION_RETAIN); handlers = nil; } }
+         [self nvmtlDispatchHandlers:handlers scheduled:YES];
+         [_completionCondition broadcast];
+     }
+@@ -196,6 +204,7 @@ - (void)nvmtlFinishExecution:(NSError *)error {
+ - (void)nvmtlFinishCallbacks {
+     [_completionCondition lock];
+     NSArray *handlers = [_handlers copy]; [_handlers removeAllObjects];
++    { NSArray *ds = objc_getAssociatedObject(self, &kNVDeferredSched); if (ds) { objc_setAssociatedObject(self, &kNVDeferredSched, nil, OBJC_ASSOCIATION_RETAIN); [self nvmtlDispatchHandlers:ds scheduled:YES]; } }
+     [self nvmtlDispatchHandlers:handlers scheduled:NO];
+     _completionReady = YES;
+     [_completionCondition broadcast]; [_completionCondition unlock];
+diff --git a/plugin/NVMTLForward.m b/plugin/NVMTLForward.m
+index 4f37c48..4c58cdd 100644
+--- a/plugin/NVMTLForward.m
++++ b/plugin/NVMTLForward.m
+@@ -224,6 +224,8 @@ static void nvfwd_forward(id self, SEL _cmd, NSInvocation *inv)
+         int deref_ = rt_ && (rt_[0] == '^' || (rt_[0] == 'r' && rt_[1] == '^'));
+         if (lf) { fprintf(lf, "pid %d NVMTL: SPI-STUB -[%s %s]  (call #%ld, zero-returned — NOT IMPLEMENTED)%s\n", getpid(), cn, sn, count,
+                           deref_ ? "  POINTER RETURN — a caller that dereferences this NULL will crash" : ""); fclose(lf); }
++        { extern void nvlog(const char *fmt, ...);
++          nvlog("SPI-STUB -[%s %s] (call #%ld, zero-returned, NOT IMPLEMENTED)%s", cn, sn, count, deref_ ? " POINTER RETURN" : ""); }
+     }
+ 
+     NSUInteger len = [[inv methodSignature] methodReturnLength];
+diff --git a/plugin/NVMTLObjects.h b/plugin/NVMTLObjects.h
+index 3fa9145..c0d594c 100644
+--- a/plugin/NVMTLObjects.h
++++ b/plugin/NVMTLObjects.h
+@@ -17,7 +17,7 @@ static inline NSMutableData *nvmtl_fc_storage(NSUInteger count) {
+ }
+ @class NVMTLHeap;
+ @interface NVMTLBuffer : NSObject <MTLBuffer> { @public nvk_buffer _b; MTLStorageMode _storage; NVMTLHeap *_heap; NSUInteger _heapOffset;
+-    void *_hostPtr; size_t _hostLen; id _hostDealloc;
++    void *_hostPtr; size_t _hostLen; id _hostDealloc; uint64_t _hostInHash;
+     NVMTLHeap *_subHeap; NSUInteger _subCharge; BOOL _aliased;
+     nvk_buffer _shadow; int _syncOut; int _zshadow;
+     NSUInteger _dirtyLo, _dirtyHi; } @end
+@@ -45,10 +45,13 @@ static inline void *nvmtl_buf_cpu(NVMTLBuffer *b) { nvmtl_buf_settle(b); return
+   uint32_t _baseSlice, _baseLevel;
+   uint32_t _surfSeed, _surfGen; BOOL _surfSynced, _surfOwned;
+   nvk_buffer _vramBuf; BOOL _vramOn;
++  nvk_image _selfShadow; BOOL _selfShadowOn;   // same-pass feedback-loop guard: private copy of a shared attachment
++  nvk_image _rsh; BOOL _rshOn;   // tiled render shadow: render encoders draw a shared-VRAM (linear) surface here
+   BOOL _stex;
+   uint64_t _resid;
+   NSUInteger _usage;
+   NVMTLBuffer *_backBuf; NSUInteger _backOff, _backBPR;
++  NVMTLBuffer *_cpyBuf; NSUInteger _cpyOff, _cpyBPR; uint8_t *_cpyShadow; size_t _cpyLen;
+ }
+ - (nvk_image *)nvi;
+ - (void *)nvview;
+@@ -110,6 +113,7 @@ extern id gNVMTLMainDevice;
+   @public nvk_cmdbuf _c; NVMTLCommandQueue *_queue; BOOL _committed; BOOL _capacityHeld; MTLCommandBufferStatus _cbstatus;
+   NVMTLTexture *_present;
+   NSMutableArray *_presentations;
++  NSMutableArray *_rshPend;   // tiled render shadow: roots whose shadow holds pixels the surface does not have yet
+   NSMutableArray *_handlers;
+   NSMutableArray *_scratch;
+   NSMutableSet *_resources;
+@@ -199,6 +203,11 @@ uint32_t nvmtl_geoms_from_descriptor(id desc, nvmtl_geom *out, uint32_t max, int
+   BOOL _visActive, _visPending;
+   NSMutableArray *_visRecords;
+   nvk_pass _pass; nvk_rtsig _passSig; BOOL _hasRef, _refused;
++  NVMTLTexture *_selfSurf; uint32_t _selfSlot; BOOL _selfMark;   // same-pass feedback-loop guard: slot samples the target
++  NVMTLTexture *_selfBindTex; BOOL _selfOwnBound;   // the texture the app bound; YES while the slot holds it, not the shadow
++  BOOL _selfSynced, _selfDirtyAll; nvk_image *_selfSyncImg; uint32_t _selfDirtyN, _selfDirty[8][4];   // what was drawn since the last snapshot
++  NVMTLTexture *_rshRoot[NVMTL_NCOL]; nvk_image *_rshLin[NVMTL_NCOL]; void *_rshLinView[NVMTL_NCOL];   // tiled render shadow per colour slot
++  uint8_t _rshIn[NVMTL_NCOL]; BOOL _rshAny, _rshPrimed;
+ } @end
+ @interface NVMTLRenderCommandEncoder ()
+ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d;
+@@ -264,6 +273,10 @@ NSUInteger nvmtl_air_max_tg(NVMTLFunction *fn);
+ @interface NVMTLBuffer () { @public BOOL _subPlaced; } @end
+ typedef struct { nvk_image img; uint32_t key[12]; NSUInteger off, len; } nvmtl_park_t;
+ @interface NVMTLTexture () { @public BOOL _subPlaced, _parkable; uint32_t _pkey[12]; NSUInteger _pkLen; } @end
++// Surface-in: the IOSurface's pages imported as a GPU buffer (on the root texture) once it is uploaded more than once.
++@interface NVMTLTexture () { @public nvk_buffer _surfImp; void *_surfImpBase; size_t _surfImpLen; uint32_t _surfUploads; BOOL _surfImpTried; } @end
++// IOSurface use count held while GPU work references the texture (see nvmtl_surf_use in NVMTLObjects.m).
++@interface NVMTLTexture () { @public os_unfair_lock _useLk; BOOL _useHeld; } @end
+ @interface NVMTLHeap () { @public nvmtl_park_t *_pk; uint32_t _npk; } @end
+ @interface NVMTLBuffer () { @public nvmtl_park_t *_bpk; uint32_t _nbpk; os_unfair_lock _bpl; } @end
+ @interface NVMTLTexture () { @public BOOL _bparkable; } @end
+diff --git a/plugin/NVMTLObjects.m b/plugin/NVMTLObjects.m
+index fc20fad..4396481 100644
+--- a/plugin/NVMTLObjects.m
++++ b/plugin/NVMTLObjects.m
+@@ -76,6 +76,13 @@ static void nvbt(const char *tag, int *count, int max) {
+ static void nvmtl_res2_note_use(NVMTLTexture *t);
+ static uint64_t nvmtl_res2_evict(uint64_t want);
+ extern uint64_t (*nvmtl_res2_evict_hook)(uint64_t want);
++// Chrome / Electron's ANGLE refuses Metal on NVIDIA GPUs ("disableMetalOnNvidia", meant for old Kepler drivers) and then falls back to software
++// compositing - WebGL is gone and pages flicker. Setting the override here covers every app, however it was started (a login-time launchctl
++// setenv is raced by apps that auto-start at login). An override the app or user already set is left alone.
++__attribute__((constructor)) static void nvmtl_angle_metal_on_nvidia(void)
++{
++    if (!getenv("ANGLE_FEATURE_OVERRIDES_DISABLED")) setenv("ANGLE_FEATURE_OVERRIDES_DISABLED", "disableMetalOnNvidia", 0);
++}
+ __attribute__((constructor)) static void nvmtl_conf_knobs(void)
+ {
+ #if NVMTL_RELEASE
+@@ -137,6 +144,32 @@ static inline int nvmtl_load_keeps(MTLLoadAction a) {
+ static void nvmtl_res2_kick(int scan);
+ static _Atomic int gRes2Scan;
+ static Class gNVMTLTexClass;
++// Apple's GPU drivers keep an IOSurface's use count raised while submitted GPU work still reads or writes it; that count is
++// what IOSurfaceIsInUse() reports. Chromium's swap-chain, CVPixelBufferPool (VideoToolbox decoder output) and Core Animation
++// only recycle a surface - write the next frame into it - once it is no longer in use. Without it WindowServer's GPU could
++// still be compositing a surface the app was already redrawing: diagonally torn windows while resizing/scrolling, video
++// frames overwritten under the reader. A texture's command-buffer references (_resRefs, released when the GPU work
++// completes) now hold the count. NVMTL_SURF_USECOUNT=0: off.
++static _Atomic long gSurfUseHeld; static _Atomic unsigned long long gSurfUseOps;
++static int nvmtl_surf_use_on(void) {
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_SURF_USECOUNT"); on = !(e && e[0] == '0');
++        nvdiag_emit("IOSurface use count %s while GPU work references the surface (NVMTL_SURF_USECOUNT=%s)", on ? "held" : "NOT held", e ? e : "unset"); }
++    return on;
++}
++static void nvmtl_surf_use(NVMTLTexture *t) {
++    if (!t->_surf || !nvmtl_surf_use_on()) return;
++    os_unfair_lock_lock(&t->_useLk);
++    const BOOL want = __atomic_load_n(&t->_resRefs, __ATOMIC_ACQUIRE) > 0;
++    if (want != t->_useHeld) {
++        if (want) IOSurfaceIncrementUseCount(t->_surf); else IOSurfaceDecrementUseCount(t->_surf);
++        t->_useHeld = want;
++        const long h = want ? atomic_fetch_add(&gSurfUseHeld, 1) + 1 : atomic_fetch_sub(&gSurfUseHeld, 1) - 1;
++        const unsigned long long k = atomic_fetch_add(&gSurfUseOps, 1) + 1;
++        if (!(k & (k - 1)) || !(k % 100000)) nvdiag_emit("IOSurface use count: %llu transitions, %ld surfaces held in use now", k, h);
++    }
++    os_unfair_lock_unlock(&t->_useLk);
++}
+ static inline void nvmtl_resref(id o, int d) {
+     if (!gNVMTLTexClass) gNVMTLTexClass = [NVMTLTexture class];
+     if (![o isKindOfClass:gNVMTLTexClass]) {
+@@ -150,6 +183,7 @@ static inline void nvmtl_resref(id o, int d) {
+     }
+     NVMTLTexture *t = o; if (t->_parent) t = t->_parent;
+     const int v = __atomic_add_fetch(&t->_resRefs, d, __ATOMIC_ACQ_REL);
++    if (t->_surf && (d > 0 ? v == 1 : v == 0)) nvmtl_surf_use(t);
+     if (d > 0) { __atomic_store_n(&t->_useEp, nvmtl_ep_now(), __ATOMIC_RELEASE); nvmtl_res3_wait_move(&t->_rstate);
+                  nvmtl_res2_note_use(t); }
+     else if (v == 0 && __atomic_load_n(&t->_wantOn, __ATOMIC_ACQUIRE)) nvmtl_res2_kick(1);
+@@ -164,9 +198,11 @@ - (NSUInteger)count { os_unfair_lock_lock(&_lk); NSUInteger n = _s.count; os_unf
+ - (id)member:(id)o { os_unfair_lock_lock(&_lk); id m = [_s member:o]; os_unfair_lock_unlock(&_lk); return m; }
+ - (NSArray *)nvmtlSnapshot { os_unfair_lock_lock(&_lk); NSArray *a = _s.allObjects; os_unfair_lock_unlock(&_lk); return a; }
+ - (NSEnumerator *)objectEnumerator { return [[self nvmtlSnapshot] objectEnumerator]; }
+-// for-in runs only over a command buffer part's own copy (one thread), never over a set still being encoded into
++// 10-09 (Music on RTX 4060 Laptop, 7 crash reports): for-in raced addObject:/removeObject:/dealloc from concurrent
++// encoder threads (crash in -[__NSSetM member:] / objc_retain mid-enumeration) — fast enumeration over the live set
++// is mutation-unsafe, so for-in enumerates a snapshot like every other reader.
+ - (NSUInteger)countByEnumeratingWithState:(NSFastEnumerationState *)st objects:(id __unsafe_unretained [])b count:(NSUInteger)n {
+-    return [_s countByEnumeratingWithState:st objects:b count:n]; }
++    return [[self nvmtlSnapshot] countByEnumeratingWithState:st objects:b count:n]; }
+ - (void)addObject:(id)o { if (!o) return; os_unfair_lock_lock(&_lk); BOOL had = [_s member:o] != nil; if (!had) [_s addObject:o];
+     os_unfair_lock_unlock(&_lk); if (!had) nvmtl_resref(o, 1); }
+ - (void)removeObject:(id)o { if (!o) return; os_unfair_lock_lock(&_lk); BOOL had = [_s member:o] != nil; if (had) [_s removeObject:o];
+@@ -176,7 +212,8 @@ - (void)removeAllObjects { os_unfair_lock_lock(&_lk); NSArray *a = _s.allObjects
+ - (id)copyWithZone:(NSZone *)z { atomic_fetch_add(&gRes2Tick, 1);
+     NSArray *a = [self nvmtlSnapshot]; NVMTLResSet *c = [[NVMTLResSet alloc] initWithCapacity:a.count]; for (id o in a) [c addObject:o]; return c; }
+ - (id)mutableCopyWithZone:(NSZone *)z { return [self copyWithZone:z]; }
+-- (void)dealloc { for (id o in _s) nvmtl_resref(o, -1); }
++- (void)dealloc { os_unfair_lock_lock(&_lk); NSArray *a = _s.allObjects; [_s removeAllObjects]; os_unfair_lock_unlock(&_lk);
++    for (id o in a) nvmtl_resref(o, -1); }
+ @end
+ 
+ static BOOL nvmtl_purge_eligible(NVMTLTexture *t) {
+@@ -750,6 +787,12 @@ - (IOSurfaceRef)iosurface { return NULL; }
+     MTLTextureDescriptor *cd = [d copy]; cd.storageMode = MTLStorageModeShared;
+     id<MTLTexture> c = [[self device] newTextureWithDescriptor:cd];
+     if (c) [c replaceRegion:MTLRegionMake2D(0, 0, d.width, d.height) mipmapLevel:0 withBytes:(char *)base + offset bytesPerRow:bpr];
++    // The copy is a snapshot, but the caller keeps writing the buffer and expects the texture to show it (Core Animation
++    // fills recycled buffers after making the texture): remember the source and re-upload it when its bytes change.
++    if (c && [(id)c isKindOfClass:[NVMTLTexture class]]) {
++        NVMTLTexture *ct = (NVMTLTexture *)c; const size_t len = (size_t)bpr * d.height;
++        if ((ct->_cpyShadow = malloc(len))) { memcpy(ct->_cpyShadow, (char *)base + offset, len);
++            ct->_cpyBuf = self; ct->_cpyOff = offset; ct->_cpyBPR = bpr; ct->_cpyLen = len; } }
+     { static int said; if (!said++) nvlog("newTiledTextureWithDescriptor: linear view refused -> copied texture (%lux%lu bpr %lu; said once)",
+                                           (unsigned long)d.width, (unsigned long)d.height, (unsigned long)bpr); }
+     return c;
+@@ -859,29 +902,48 @@ - (void)setLabel:(NSString *)l { _label = [l copy]; }
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <errno.h>
++// GPU-write tracking is per surface PLANE: an NV12 surface's luma and chroma images are separate textures, and a write to one must
++// not stop the other (which only needs its CPU pages uploaded) from being uploaded.
++#define NVVID(r, ...) do { if ((r)->_surf && IOSurfaceGetPlaneCount((r)->_surf) > 1) { static _Atomic unsigned nvvid; if (atomic_fetch_add(&nvvid, 1) < 600) { char vb_[300]; snprintf(vb_, sizeof vb_, __VA_ARGS__); syslog(LOG_ERR, "NullMoth-diag: VIDEO surf %u plane %lu %ux%u fmt %u: %s", (unsigned)IOSurfaceGetID((r)->_surf), (unsigned long)(r)->_plane, (r)->_i.w, (r)->_i.h, (r)->_i.fmt, vb_); } } } while (0)
++#define NVSD_KEY(r) ((uint32_t)IOSurfaceGetID((r)->_surf) + ((uint32_t)(r)->_plane << 26))
++static void nvbig_tag(IOSurfaceRef surf, NSUInteger plane, uint32_t *seed, uint32_t *gen, int *ok) {
++    CFStringRef k = CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), (unsigned long)plane); CFTypeRef v = IOSurfaceCopyValue(surf, k); CFRelease(k);
++    uint32_t tg[3] = { 0, 0, 0 }; *ok = 0;
++    if (v && CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) == (CFIndex)sizeof tg) { memcpy(tg, CFDataGetBytePtr((CFDataRef)v), sizeof tg); *ok = tg[0] == 0x564d5634u; }
++    if (v) CFRelease(v); *seed = tg[1]; *gen = tg[2];
++}
+ static void nvmtl_surf_dirty(NVMTLCommandBuffer *cb, NVMTLTexture *t) {
+     if (!cb || !t) return;
+     NVMTLTexture *r = t->_parent ? t->_parent : t;
+     if (!r->_surf) return;
+     if (!cb->_surfDirty) cb->_surfDirty = [NSMutableSet new];
++    if ([cb->_surfDirty containsObject:r]) return;   // one mark per surface per submission part: the publish is counted the same way
+     [cb->_surfDirty addObject:r];
++    nvsd_mark(NVSD_KEY(r), 0);
+ }
+ static int g_trace_lines;
+-static int g_trace_bigonly, g_trace_mute;
++static int g_trace_bigonly, g_trace_mute, g_trace_vt;
+ static int nvmtl_trace_on(void) {
+     static uint64_t next; static int on;
+     uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+     static int cap = 2500;
+-    if (now >= next) { next = now + 250000000ull; int was = on; on = access("/tmp/nvmtl-trace-request", F_OK) == 0;
+-        g_trace_bigonly = on && access("/tmp/nvmtl-trace-big", F_OK) == 0; if (!g_trace_bigonly) g_trace_mute = 0;
+-        if (on && !was) { g_trace_lines = 0; cap = access("/tmp/nvmtl-trace-long", F_OK) == 0 ? 20000 : 2500; } }
++    if (now >= next) { next = now + 250000000ull; int was = on;
++        // WindowServer cannot see /tmp: the same three files under /private/var/tmp switch the trace on and send it to nvmtl-big.log
++        g_trace_vt = access("/private/var/tmp/nvmtl-trace-request", F_OK) == 0;
++        on = g_trace_vt || access("/tmp/nvmtl-trace-request", F_OK) == 0;
++        g_trace_bigonly = on && (access("/tmp/nvmtl-trace-big", F_OK) == 0 || access("/private/var/tmp/nvmtl-trace-big", F_OK) == 0); if (!g_trace_bigonly) g_trace_mute = 0;
++        if (on && !was) { g_trace_lines = 0; cap = (access("/tmp/nvmtl-trace-long", F_OK) == 0 || access("/private/var/tmp/nvmtl-trace-long", F_OK) == 0) ? 500000 : 2500; } }
+     return on && !g_trace_mute && g_trace_lines < cap;
+ }
++// trace-big scopes the trace to the surfaces the black-block investigation cares about: the NVBIG_RANGE window/layer
++// surfaces (3-7M px). The 7.2M scan-out framebuffer alone burned ~17k trace lines in the first seconds after login, so
++// scoping by the old w<1000||h<100 rule left no budget for the defocus redraws this trace exists to capture.
+ static int nvtrace_scope(uint32_t w, uint32_t h) { int was = g_trace_mute; g_trace_mute = 0; (void)nvmtl_trace_on();
+-    g_trace_mute = g_trace_bigonly && (w < 1000 || h < 100); return was; }
++    g_trace_mute = g_trace_bigonly && !NVBIG_RANGE(w, h); return was; }
+ static void nvtrace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+ static void nvtrace(const char *fmt, ...) {
+     if (!nvmtl_trace_on()) return;
++    if (g_trace_vt) { char b[600]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a); nvbig("T %s", b); g_trace_lines++; return; }
+     char p[96]; snprintf(p, sizeof p, "/tmp/nvmtl-trace-%d.txt", (int)getpid());
+     int fd = open(p, O_WRONLY | O_CREAT | O_APPEND, 0600);
+     if (fd < 0) { static int said; if (!said++) nvlog("G15 trace: cannot open %s (errno %d)", p, errno); return; }
+@@ -970,6 +1032,7 @@ unsigned long long nvmtl_tex_objs_live(void) {
+     return made > gone ? made - gone : 0;
+ }
+ unsigned long long nvmtl_tex_objs_released(void) { return nvmtl_tex_objs_gone; }
++static _Atomic size_t gSurfImpBytes;
+ @implementation NVMTLTexture
+ + (instancetype)alloc { nvmtl_tex_objs_made++; return [super alloc]; }
+ - (void)setResponsibleProcess:(int)pid { static int said; if (!said++) nvlog("setResponsibleProcess: pid %d on a texture - per-process attribution is not kept; nothing to set (said once)", pid); }
+@@ -1010,7 +1073,12 @@ - (void)dealloc {
+     if (!_parent && _bparkable && _backBuf && _i.img) nvmtl_bpark_put(_backBuf, &_i, _pkey);
+     if (!_parent) nvmtl_vk_image_destroy(&_i);
+     if (!_parent && _vramOn) { nvmtl_vk_buffer_destroy(&_vramBuf); _vramOn = NO; }
++    if (!_parent && _selfShadowOn) { nvmtl_vk_image_destroy(&_selfShadow); _selfShadowOn = NO; }
++    if (!_parent && _rshOn) { nvmtl_vk_image_destroy(&_rsh); _rshOn = NO; }
++    if (!_parent && _surfImp.buf) { nvmtl_vk_buffer_destroy(&_surfImp); atomic_fetch_sub(&gSurfImpBytes, _surfImpLen); _surfImpLen = 0; }
++    if (_useHeld && _surf) { IOSurfaceDecrementUseCount(_surf); _useHeld = NO; atomic_fetch_sub(&gSurfUseHeld, 1); }
+     if (_surfOwned && _surf) CFRelease(_surf);
++    free(_cpyShadow); _cpyShadow = NULL; _cpyBuf = nil;
+     if (_subHeap) { NVMTLHeap *h = _subHeap; NSUInteger c = _subCharge; _subHeap = nil; _subCharge = 0;
+                     if (_subPlaced && c) { _subPlaced = NO; [h nvmtlGiveRange:_heapOffset length:c]; }
+                     [h nvmtlReleaseSubAllocation:c]; }
+@@ -1026,22 +1094,118 @@ - (BOOL)nvmtlSurfaceCopyable {
+         (void *)_surf, (unsigned long)_plane, _i.w, _i.h, _i.bpp, IOSurfaceGetBytesPerElementOfPlane(_surf, (uint32_t)_plane));
+     return NO;
+ }
++- (void)nvmtlCopyIn {
++    NVMTLTexture *r = _parent ? _parent : self;
++    @synchronized (r) {
++        const uint8_t *src = (const uint8_t *)[(id<MTLBuffer>)r->_cpyBuf contents];
++        if (!src || !memcmp(r->_cpyShadow, src + r->_cpyOff, r->_cpyLen)) return;
++        memcpy(r->_cpyShadow, src + r->_cpyOff, r->_cpyLen);
++        if (nvmtl_vk_image_write_region_level_layer(r->_q, &r->_i, r->_cpyShadow, r->_cpyBPR, 0, 0, r->_i.w, r->_i.h, 0, 0))
++            nvlog("copied buffer texture: re-upload FAILED (%ux%u)", r->_i.w, r->_i.h);
++        else { static _Atomic unsigned long long n; const unsigned long long k = atomic_fetch_add(&n, 1) + 1;
++            if (!(k & (k - 1))) nvlog("copied buffer texture (linear view refused): re-synced from its buffer %llu times (last %ux%u)", k, r->_i.w, r->_i.h); }
++    }
++}
++// The surface's pages as a GPU-readable buffer, so a re-upload is a GPU copy straight from them (no CPU copy, no staging).
++// Only for a surface uploaded before (static contents keep no pinned pages) and within NVMTL_SURFIN_IMPORT_MB (default
++// 0 = never, which is the default) of imported surface memory in this process. Called on the root texture with the surface locked.
++- (const nvk_buffer *)nvmtlSurfaceImport {
++    @synchronized (self) {
++        if (_surfUploads++ < 1) return NULL;
++        void *ab = IOSurfaceGetBaseAddress(_surf);
++        if (_surfImp.buf) return ab == _surfImpBase ? &_surfImp : NULL;
++        if (_surfImpTried || !ab) return NULL;
++        _surfImpTried = YES;
++        static long capmb = -1;
++        if (capmb < 0) { const char *e = getenv("NVMTL_SURFIN_IMPORT_MB"); capmb = e && *e ? atol(e) : 0;  /* off by default: the GPU reading the surface pages later races Chrome rewriting its raster tiles (flicker while scrolling) */ if (capmb < 0) capmb = 0;
++            nvdiag_emit("surface-in: up to %ld MB of re-uploaded IOSurfaces are read by the GPU from their own pages (NVMTL_SURFIN_IMPORT_MB=%s)", capmb, e ?: "unset"); }
++        const size_t pg = (size_t)getpagesize(), len = (IOSurfaceGetAllocSize(_surf) + pg - 1) / pg * pg;
++        if (!len || ((uintptr_t)ab & (pg - 1))) return NULL;
++        if (atomic_fetch_add(&gSurfImpBytes, len) + len > (size_t)capmb << 20) { atomic_fetch_sub(&gSurfImpBytes, len); return NULL; }
++        if (nvmtl_vk_buffer_import_host(ab, len, &_surfImp)) { memset(&_surfImp, 0, sizeof _surfImp); atomic_fetch_sub(&gSurfImpBytes, len); return NULL; }
++        _surfImpBase = ab; _surfImpLen = len;
++        static _Atomic unsigned long long n; const unsigned long long k = atomic_fetch_add(&n, 1) + 1;
++        if (!(k & (k - 1))) nvdiag_emit("surface-in: imported IOSurface pages #%llu (%ux%u, %zu KB; %zu MB imported now)", k, _i.w, _i.h, len >> 10, (size_t)atomic_load(&gSurfImpBytes) >> 20);
++        return &_surfImp;
++    }
++}
+ - (void)nvmtlSurfaceIn {
+     NVMTLTexture *r = _parent ? _parent : self;
++    if (r->_cpyBuf) { [self nvmtlCopyIn]; return; }
++    // A texture made over a no-copy buffer whose pages could not be imported reads our copy of those pages, and that copy
++    // was only refreshed when the buffer itself was bound. Core Animation binds just the texture and keeps rewriting the
++    // pages (small shared-memory layer contents), so refresh the copy here or the layer shows stale/black bytes.
++    if (r->_backBuf && r->_backBuf->_hostPtr) {
++        NVMTLBuffer *bb = r->_backBuf;
++        if (bb->_b.map && bb->_hostLen && memcmp(bb->_b.map, bb->_hostPtr, bb->_hostLen)) {
++            nvmtl_buffer_sync_in(bb);
++            static _Atomic unsigned long long n; const unsigned long long k = atomic_fetch_add(&n, 1) + 1;
++            if (!(k & (k - 1))) nvlog("texture over a copied (import refused) buffer: refreshed from the caller's pages %llu times (last %zu B)", k, bb->_hostLen);
++        }
++        return;
++    }
+     if (!r->_surf) return;
+     const uint32_t vgen = r->_vramOn ? 0 : nvmtl_vram_gen(r->_surf, r->_plane);
+-    if (r->_surfSynced && IOSurfaceGetSeed(r->_surf) == r->_surfSeed && (r->_vramOn || vgen == r->_surfGen)) return;
+-    if (![r nvmtlSurfaceCopyable]) return;
++    if (r->_surfSynced && IOSurfaceGetSeed(r->_surf) == r->_surfSeed && (r->_vramOn || vgen == r->_surfGen)) { NVVID(r, "surface-in: already synced (seed %u)", r->_surfSeed); return; }
++    if (![r nvmtlSurfaceCopyable]) { NVVID(r, "surface-in: not copyable"); return; }
+     { uint32_t now = IOSurfaceGetSeed(r->_surf);
++      if (nvsd_guard_on() && nvsd_pending(NVSD_KEY(r))) {
++          // Private images too: this process's own surface-out raises the seed after every frame, so an upload keyed on
++          // "seed changed" would copy the CPU pages - an OLDER frame - over the GPU image that newer passes already drew into.
++          // This process has GPU writes to the surface's VRAM queued or running; the CPU pages are older than what they will
++          // leave there, and uploading them now would overwrite (or race) those writes. The surface-out after they complete
++          // publishes them.
++          if (r->_vramOn && NVBIG_RANGE(r->_i.w, r->_i.h)) nvbig("IN guard-skip surf %u %ux%u seed %u (GPU writes in flight)", (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h, now);
++          r->_surfSeed = now; r->_surfSynced = YES;
++          NVVID(r, "surface-in: GUARD skipped the upload (seed %u)", now);
++          NVDIAG(200, "surfin GUARD: surf %u %ux%u has GPU writes in flight - CPU upload over its %s skipped (seed %u)",
++                 (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h, r->_vramOn ? "VRAM" : "image", now);
++          return; }
+       if (r->_vramOn && nvmtl_vram_tag_current(r->_surf, r->_plane, now)) {
++          if (NVBIG_RANGE(r->_i.w, r->_i.h)) { uint32_t ts, tgn; int tok; nvbig_tag(r->_surf, r->_plane, &ts, &tgn, &tok); nvbig("IN tag-skip surf %u %ux%u seed %u tag seed %u gen %u (VRAM current, no upload)", (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h, now, ts, tgn); }
+           r->_surfSeed = now; r->_surfSynced = YES; g_surfin_skip++;
+           static unsigned ns; if (ns++ < 6 || ns % 2000 == 0) nvlog("item 7: surface-in SKIPPED (shared VRAM current at seed %u): %llu skipped, %llu copied", now, g_surfin_skip, g_surfin_copy);
+           return; } }
++    static _Atomic unsigned nupdiag;  // the tag read below is an IOSurface IPC: only while the diagnostic still prints
++    if (atomic_fetch_add(&nupdiag, 1) < 400) { const uint32_t sid = (uint32_t)IOSurfaceGetID(r->_surf), now = IOSurfaceGetSeed(r->_surf);
++      CFStringRef k = CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), (unsigned long)r->_plane); CFTypeRef v = IOSurfaceCopyValue(r->_surf, k); CFRelease(k);
++      uint32_t tg[3] = { 0, 0, 0 }; if (v && CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) == (CFIndex)sizeof tg) memcpy(tg, CFDataGetBytePtr((CFDataRef)v), sizeof tg);
++      if (v) CFRelease(v);
++      nvdiag_emit("surfin UPLOAD %s surf %u %ux%u fmt %u: seed now %u, tag %s seed %u gen %u, texture synced %d at seed %u, GPU writes in flight %d",
++             r->_vramOn ? "over shared VRAM" : "into private image", sid, r->_i.w, r->_i.h, r->_i.fmt, now,
++             tg[0] == 0x564d5634u ? "ok" : "none", tg[1], tg[2], r->_surfSynced, r->_surfSeed, nvsd_pending(NVSD_KEY(r))); }
+     uint32_t seed = 0;
+     if (IOSurfaceLock(r->_surf, kIOSurfaceLockReadOnly, &seed) != kIOReturnSuccess) { nvlog("G13 surface-in: IOSurfaceLock FAILED"); return; }
+     void *base = IOSurfaceGetBaseAddressOfPlane(r->_surf, (uint32_t)r->_plane);
+     size_t row = IOSurfaceGetBytesPerRowOfPlane(r->_surf, (uint32_t)r->_plane);
+-    int rc = (base && row) ? nvmtl_vk_image_write(r->_q, &r->_i, base, row) : -1;
++    if (r->_vramOn && NVBIG_RANGE(r->_i.w, r->_i.h) && base && row) {
++        uint32_t ts, tgn; int tok; nvbig_tag(r->_surf, r->_plane, &ts, &tgn, &tok);
++        size_t nz = 0, tot = 0; const uint8_t *bp = base; const size_t total = row * r->_i.h;
++        for (size_t o = 0; o < total; o += 4099) { tot++; nz += bp[o] != 0; }   // ~1 in 4099 bytes: is the CPU copy that is about to go over the VRAM blank?
++        nvbig("IN UPLOAD surf %u %ux%u: lock seed %u, tag %s seed %u gen %u, texture synced %d at seed %u, CPU pages sample %zu/%zu non-zero%s", (unsigned)IOSurfaceGetID(r->_surf),
++              r->_i.w, r->_i.h, seed, tok ? "ok" : "none", ts, tgn, r->_surfSynced, r->_surfSeed, nz, tot, nz == 0 ? "  <== BLANK CPU PAGES OVER VRAM" : ""); }
++    { if (base && row && r->_surf && IOSurfaceGetPlaneCount(r->_surf) > 1) { const uint8_t *bp = base; size_t n = row * MIN((size_t)r->_i.h, (size_t)64), nz = 0; for (size_t i = 0; i < n; i++) nz += bp[i] != 0;
++        NVVID(r, "surface-in: UPLOAD seed %u row %zu, %zu of the first %zu bytes non-zero", seed, row, nz, n);
++        if (nz == 0) { // blank at upload: look again a little later to tell "written late" from "never written"
++            IOSurfaceRef lsf = r->_surf; CFRetain(lsf); const uint32_t lpl = (uint32_t)r->_plane, lid = (uint32_t)IOSurfaceGetID(lsf), hh = r->_i.h; const size_t ln = n;
++            static const int delays[3] = { 20, 60, 200 };
++            for (int di = 0; di < 3; di++) { if (di) CFRetain(lsf); const int dly = delays[di];
++                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)dly * NSEC_PER_MSEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
++                    uint32_t sd = 0; size_t z = 0; if (IOSurfaceLock(lsf, kIOSurfaceLockReadOnly, &sd) == kIOReturnSuccess) { const uint8_t *q = IOSurfaceGetBaseAddressOfPlane(lsf, lpl);
++                        if (q) for (size_t i = 0; i < ln; i++) z += q[i] != 0; IOSurfaceUnlock(lsf, kIOSurfaceLockReadOnly, &sd); }
++                    syslog(LOG_ERR, "NullMoth-diag: VIDEO LATE surf %u plane %u (h %u): %d ms after a blank upload: seed %u, %zu of %zu bytes non-zero%s", lid, lpl, hh, dly, sd, z, ln, z ? "  <== WRITTEN LATE" : "");
++                    CFRelease(lsf); }); } } } else if (r->_surf && IOSurfaceGetPlaneCount(r->_surf) > 1) NVVID(r, "surface-in: UPLOAD with no base address (base %p row %zu)", base, row); }
++    int rc = -1;
++    if (base && row && !r->_vramOn && nvmtl_vk_surfin_async_on()) {
++        // Private image: submitted without waiting (only this process's queue reads it, and queue order puts the copy first);
++        // the GPU reads the surface's pages itself once it is a repeat upload. An upload over SHARED VRAM stays synchronous:
++        // the tag set below tells other processes - on other GPU channels - that the VRAM already holds these pages.
++        const nvk_buffer *dir = [r nvmtlSurfaceImport];
++        const size_t off = dir ? (size_t)((const uint8_t *)base - (const uint8_t *)r->_surfImpBase) : 0;
++        void *hold = (__bridge_retained void *)r;
++        rc = nvmtl_vk_image_write_async(&r->_i, base, row, dir && base >= r->_surfImpBase ? dir : NULL, off, hold, nvmtl_pre_release);
++        if (rc) { (void)CFBridgingRelease(hold); rc = nvmtl_vk_image_write(r->_q, &r->_i, base, row); }
++    } else if (base && row) rc = nvmtl_vk_image_write(r->_q, &r->_i, base, row);
+     if (!rc && r->_i.bpp == 4) { char tag[24]; snprintf(tag, sizeof tag, "in%u-", (unsigned)IOSurfaceGetID(r->_surf)); nvmtl_frame_dump(tag, base, row, r->_i.w, r->_i.h); }
+     IOSurfaceUnlock(r->_surf, kIOSurfaceLockReadOnly, NULL);
+     if (rc) { nvlog("G13 surface-in: upload FAILED (%ux%u) — retried at the next use", r->_i.w, r->_i.h); return; }
+@@ -1050,16 +1214,27 @@ - (void)nvmtlSurfaceIn {
+     static unsigned n; if (n++ < 6 || n % 2000 == 0) nvlog("G13 surface-in #%u: %ux%u surface %p seed %u uploaded", n, r->_i.w, r->_i.h, (void *)r->_surf, seed);
+ }
+ - (BOOL)nvmtlSurfaceOut {
++    // The writes count as published only once the surface's tag / CPU pages say so; marking them done any earlier lets a
++    // texture made in between upload the old CPU pages over them.
++    const BOOL ok = [self nvmtlSurfaceOutPublish];
++    NVMTLTexture *r = _parent ? _parent : self;
++    if (r->_surf) nvsd_mark(NVSD_KEY(r), 1);
++    return ok;
++}
++- (BOOL)nvmtlSurfaceOutPublish {
+     NVMTLTexture *r = _parent ? _parent : self;
+     if (!r->_surf) return YES;
++    NVDIAG(100, "surfout surf %u %ux%u %s seed %u", (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h, r->_vramOn ? "shared VRAM" : "private", IOSurfaceGetSeed(r->_surf));
+     if (![r nvmtlSurfaceCopyable]) return NO;
+     if (r->_vramOn && !nvmtl_vk_surface_dirty((uint32_t)IOSurfaceGetID(r->_surf), (uint32_t)r->_plane)) {
+         uint32_t seed = IOSurfaceGetSeed(r->_surf);
+         r->_surfSeed = seed; r->_surfSynced = YES;
+         r->_surfGen = nvmtl_vram_tag_bump(r->_surf, r->_plane, seed);
++        if (NVBIG_RANGE(r->_i.w, r->_i.h)) nvbig("OUT dirty surf %u %ux%u seed %u gen %u (GPU writes published, no copy)", (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h, seed, r->_surfGen);
+         static unsigned nd; if (nd++ < 6 || nd % 5000 == 0) nvlog("surface-out -> dirty, no copy (%ux%u surface %u seed %u, #%u)", r->_i.w, r->_i.h, (unsigned)IOSurfaceGetID(r->_surf), seed, nd);
+         return YES;
+     }
++    if (r->_vramOn && NVBIG_RANGE(r->_i.w, r->_i.h)) nvbig("OUT copy-out surf %u %ux%u (dirty marking refused, VRAM read back into the CPU pages)", (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h);
+     uint64_t t0 = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+     uint32_t lockopt = nvmtl_noseed() ? kIOSurfaceLockReadOnly : 0;
+     if (IOSurfaceLock(r->_surf, lockopt, NULL) != kIOReturnSuccess) { nvlog("G13 surface-out: IOSurfaceLock FAILED"); return NO; }
+@@ -2437,6 +2612,31 @@ - (BOOL)nvmtlSamplePositionError:(NSString *)message {
+         code:MTLCommandBufferErrorInternal userInfo:@{NSLocalizedDescriptionKey:message}]];
+     return NO;
+ }
++// Tiled render shadow: copy pending shadows back into their surfaces (the command buffer is between encoders, so no
++// render pass is open). flush_one: just this root; flush_all: every pending root except those in `keep`.
++static void nvmtl_rsh_flush_one(NVMTLCommandBuffer *cb, NVMTLTexture *root) {
++    if (!cb || !root || !cb->_rshPend.count || ![cb->_rshPend containsObject:root]) return;
++    if (!root->_rshOn || nvmtl_vk_cmd_rsh_copy(&cb->_c, &root->_rsh, &root->_i)) {
++        static int said; if (said++ < 4) nvlog("tiled render shadow: shadow -> surface copy FAILED - the surface misses the shadow's pixels"); }
++    if (!cb->_resources) cb->_resources = [NVMTLResSet new];
++    [cb->_resources addObject:root];
++    [cb->_rshPend removeObjectIdenticalTo:root];
++}
++// Another texture object on the same IOSurface aliases the same VRAM: its pending shadow must reach the surface before
++// this one is drawn or read. Returns such a pending root (the first), NULL if none.
++static NVMTLTexture *nvmtl_rsh_alias_of(NVMTLCommandBuffer *cb, NVMTLTexture *root) {
++    if (!cb || !root || !root->_surf || !cb->_rshPend.count) return nil;
++    for (NVMTLTexture *r in cb->_rshPend) if (r != root && r->_surf == root->_surf && r->_plane == root->_plane) return r;
++    return nil;
++}
++static void nvmtl_rsh_flush_alias(NVMTLCommandBuffer *cb, NVMTLTexture *root) {
++    for (NVMTLTexture *r; (r = nvmtl_rsh_alias_of(cb, root)); ) nvmtl_rsh_flush_one(cb, r);
++}
++static void nvmtl_rsh_flush_all(NVMTLCommandBuffer *cb, NSArray *keep) {
++    if (!cb || !cb->_rshPend.count) return;
++    for (NVMTLTexture *root in [cb->_rshPend copy])
++        if (!keep || [keep indexOfObjectIdenticalTo:root] == NSNotFound) nvmtl_rsh_flush_one(cb, root);
++}
+ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d {
+     NVMTLCommandBuffer *cb = _cb;
+     memset(&_pass, 0, sizeof _pass); cb->_c.depth_view = NULL;
+@@ -2469,6 +2669,7 @@ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d {
+         if (!tx) continue;
+         if (![(id)tx isKindOfClass:[NVMTLTexture class]]) { nvlog("encoder: apps2 colour %u is a %s, not our texture — pass REFUSED", i, object_getClassName(tx)); return NO; }
+         NVMTLTexture *t = (NVMTLTexture *)tx; uint32_t cw = 0, ch = 0;
++        nvmtl_rsh_flush_alias(cb, t->_parent ? t->_parent : t);
+         uint32_t zslice = [t nvi]->mtl_type == 7 ? (uint32_t)ca.depthPlane : (uint32_t)ca.slice;
+         if (ca.depthPlane && [t nvi]->mtl_type != 7) { static int said;
+             if (said++ < 4) nvlog("encoder: apps2 colour %u sets depthPlane %lu on a texture of type %u, which is not 3D — depthPlane IGNORED, its slice %lu is used", i, (unsigned long)ca.depthPlane, [t nvi]->mtl_type, (unsigned long)ca.slice); }
+@@ -2477,6 +2678,25 @@ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d {
+         _pass.col[i] = [t nvi]; _pass.colw[i] = cw; _pass.colh[i] = ch;
+         _pass.col_level[i] = t->_baseLevel + (uint32_t)ca.level; _pass.col_layer[i] = t->_baseSlice + zslice;
+         _pass.colfmt[i] = tvk;
++        { // Tiled render shadow: a whole single-sample shared-VRAM surface, attached in its own format, is drawn into a
++          // private tiled image of it (nvmtl_vk_cmd_rsh_copy in nvmtl_vk.c says why); restored at endEncoding.
++          NVMTLTexture *rr = t->_parent ? t->_parent : t; nvk_image *li = [rr nvi];
++          if (nvmtl_vk_rsh_on() && rr->_vramOn && li->samples <= 1 && li->mips <= 1 && (li->layers ? li->layers : 1) == 1 && NL == 1
++              && li->mtl_type == 2 && _pass.col_level[i] == 0 && _pass.col_layer[i] == 0 && tvk == li->fmt && !ta8 && cw == li->w && ch == li->h) {
++              if (!rr->_rshOn) {
++                  if (nvmtl_vk_rsh_create(li, &rr->_rsh)) { static int said; if (said++ < 4) nvlog("tiled render shadow: create FAILED for %ux%u - drawing the linear surface", li->w, li->h); }
++                  else { rr->_rshOn = YES; static unsigned n; if (n++ < 8) nvlog("tiled render shadow: surf %u %ux%u gets a tiled render image",
++                      rr->_surf ? (unsigned)IOSurfaceGetID(rr->_surf) : 0u, li->w, li->h); } }
++              void *sv = NULL; uint32_t sw = 0, sh = 0;
++              if (rr->_rshOn && !nvmtl_vk_cmd_attachment_view_n(&cb->_c, &rr->_rsh, 0, 0, 0, 1, tvk, ta8, &sv, &sw, &sh) && sw == cw && sh == ch) {
++                  _rshRoot[i] = rr; _rshLin[i] = li; _rshLinView[i] = _pass.colview[i];
++                  // Load and DontCare keep what the surface holds - unless the shadow is already the newest copy
++                  _rshIn[i] = ca.loadAction != MTLLoadActionClear && ![cb->_rshPend containsObject:rr];
++                  _pass.col[i] = &rr->_rsh; _pass.colview[i] = sv; _rshAny = YES;
++              }
++          }
++        }
++        if (!_rshRoot[i]) nvmtl_rsh_flush_one(cb, t->_parent ? t->_parent : t);   // drawn without the shadow: surface first
+         MTLClearColor cc = ca.clearColor;
+         _pass.clear[i][0] = (float)cc.red; _pass.clear[i][1] = (float)cc.green; _pass.clear[i][2] = (float)cc.blue; _pass.clear[i][3] = (float)cc.alpha;
+         if (nvmtl_load_keeps(ca.loadAction)) load |= NVMTL_LOAD_COLOUR(i);
+@@ -2495,6 +2715,8 @@ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d {
+         if ((sa == MTLStoreActionMultisampleResolve || sa == MTLStoreActionStoreAndMultisampleResolve || sa == MTLStoreActionUnknown) && rx) {
+             if (![(id)rx isKindOfClass:[NVMTLTexture class]]) { nvlog("encoder: apps2 resolve %u is a %s, not our texture — pass REFUSED", i, object_getClassName(rx)); return NO; }
+             NVMTLTexture *r = (NVMTLTexture *)rx; uint32_t rw = 0, rh = 0;
++            nvmtl_rsh_flush_one(cb, r->_parent ? r->_parent : r);   // a resolve writes the surface itself
++            nvmtl_rsh_flush_alias(cb, r->_parent ? r->_parent : r);
+             int ra8 = 0; uint32_t rvk = nvmtl_tex_attach_vkfmt(r, &ra8);
+             if (nvmtl_vk_cmd_attachment_view_n(&cb->_c, [r nvi], 0, r->_baseLevel + (uint32_t)ca.resolveLevel, r->_baseSlice + (uint32_t)ca.resolveSlice, NL, rvk, ra8, &_pass.resview[i], &rw, &rh)) return NO;
+             _pass.res[i] = [r nvi]; _pass.resw[i] = rw; _pass.resh[i] = rh;
+@@ -2509,6 +2731,8 @@ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d {
+         if (da.texture && sa.texture && da.texture != sa.texture) { static int said; if (!said++) nvlog("encoder: apps2 separate depth and stencil textures — the stencil texture is NOT attached (one depth/stencil attachment)"); }
+         MTLRenderPassAttachmentDescriptor *which = da.texture ? (MTLRenderPassAttachmentDescriptor *)da : (MTLRenderPassAttachmentDescriptor *)sa;
+         NVMTLTexture *dt = (NVMTLTexture *)dtx; uint32_t dw = 0, dh = 0;
++        nvmtl_rsh_flush_one(cb, dt->_parent ? dt->_parent : dt);
++        nvmtl_rsh_flush_alias(cb, dt->_parent ? dt->_parent : dt);
+         if (nvmtl_vk_cmd_attachment_view_n(&cb->_c, [dt nvi], 1, dt->_baseLevel + (uint32_t)which.level, dt->_baseSlice + (uint32_t)which.slice, NL, 0, 0, &_pass.dsview, &dw, &dh)) return NO;
+         {
+             MTLStoreAction dsa = da.storeAction, ssa = sa.storeAction;
+@@ -2517,6 +2741,8 @@ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d {
+             id<MTLTexture> drx = dr ? da.resolveTexture : sr ? sa.resolveTexture : nil;
+             if (drx && [(id)drx isKindOfClass:[NVMTLTexture class]]) {
+                 NVMTLTexture *r = (NVMTLTexture *)drx; uint32_t rw = 0, rh = 0;
++                nvmtl_rsh_flush_one(cb, r->_parent ? r->_parent : r);
++                nvmtl_rsh_flush_alias(cb, r->_parent ? r->_parent : r);
+                 MTLRenderPassAttachmentDescriptor *rw_ = dr ? (MTLRenderPassAttachmentDescriptor *)da : (MTLRenderPassAttachmentDescriptor *)sa;
+                 if (nvmtl_vk_cmd_attachment_view_n(&cb->_c, [r nvi], 1, r->_baseLevel + (uint32_t)rw_.resolveLevel, r->_baseSlice + (uint32_t)rw_.resolveSlice, NL, 0, 0, &_pass.dresview, &rw, &rh)) return NO;
+                 _pass.dres = [r nvi];
+@@ -2558,8 +2784,90 @@ - (BOOL)nvmtlBuildPass:(MTLRenderPassDescriptor *)d {
+     cb->_c.depth_view = _pass.dsview;
+     return YES;
+ }
++// Tiled render shadow: before the encoder's first pass, bring the shadows of attachments that are not cleared (and
++// not already pending in this command buffer) up to date with their surface. At endEncoding the shadow becomes PENDING
++// on the command buffer: consecutive render encoders on the same surface keep drawing into it with no copies, and
++// nvmtl_rsh_flush copies it back before anything else could see the surface (any other encoder, an event signal, the
++// commit). The self-bind guard's restarts reuse the primed shadow, so priming happens once per encoder.
++- (void)nvmtlRshPrime {
++    if (!_rshAny || _rshPrimed) return;
++    _rshPrimed = YES;
++    for (uint32_t i = 0; i < NVMTL_NCOL; i++)
++        if (_rshRoot[i] && _rshIn[i] && nvmtl_vk_cmd_rsh_copy(&_cb->_c, _rshLin[i], &_rshRoot[i]->_rsh)) {
++            static int said; if (said++ < 4) nvlog("tiled render shadow: surface -> shadow copy FAILED (colour %u)", i); }
++}
++- (void)nvmtlRshFlush {
++    if (!_rshAny) return;
++    if (_rshPrimed) {
++        if (!_cb->_rshPend) _cb->_rshPend = [NSMutableArray new];
++        for (uint32_t i = 0; i < NVMTL_NCOL; i++)
++            if (_rshRoot[i] && ![_cb->_rshPend containsObject:_rshRoot[i]]) [_cb->_rshPend addObject:_rshRoot[i]];
++    }
++    _rshAny = NO;
++}
++// A pass that never began (no draws: clear-only / empty pass) runs on the surface itself, as before the shadow.
++- (void)nvmtlRshUndo {
++    if (!_rshAny || _rshPrimed) return;
++    // A shadow still pending from an earlier encoder of this command buffer goes back first: the clear / empty pass
++    // below then lands on the newest pixels, and nothing stays pending that is older than the surface.
++    for (uint32_t i = 0; i < NVMTL_NCOL; i++)
++        if (_rshRoot[i]) { nvmtl_rsh_flush_one(_cb, _rshRoot[i]); _pass.col[i] = _rshLin[i]; _pass.colview[i] = _rshLinView[i]; _rshRoot[i] = nil; }
++    _rshAny = NO;
++}
++// Tiled render shadow, sampling side. Between encoders of one command buffer a surface's newest pixels can sit in its
++// shadow (pending) instead of the surface, so a render encoder that samples the surface directly gets the shadow bound
++// in its place: Chrome's Graphite frame alternates window passes with filter passes that read the window, and binding
++// the shadow keeps all of them copy-free. Returns the view to bind, or NULL to bind the texture as usual (after
++// nvmtlRshMakeCurrent made the surface current where a shadow is involved but cannot stand in for the texture).
++- (BOOL)nvmtlRshOwns:(NVMTLTexture *)root {
++    for (uint32_t i = 0; _rshAny && i < NVMTL_NCOL; i++) if (_rshRoot[i] == root) return YES;
++    return NO;
++}
++- (void *)nvmtlRshSampleView:(NVMTLTexture *)nt {
++    NVMTLTexture *root = nt->_parent ? nt->_parent : nt;
++    for (NVMTLTexture *al; (al = nvmtl_rsh_alias_of(_cb, root)); ) [self nvmtlRshMakeCurrent:al];
++    for (uint32_t i = 0; _rshAny && i < NVMTL_NCOL; i++)   // ...and so is this encoder's own attachment on the same surface
++        if (_rshRoot[i] && _rshRoot[i] != root && root->_surf && _rshRoot[i]->_surf == root->_surf) [self nvmtlRshMakeCurrent:_rshRoot[i]];
++    if (!root->_rshOn) return NULL;
++    const BOOL mine = [self nvmtlRshOwns:root], pend = !mine && _cb->_rshPend.count && [_cb->_rshPend containsObject:root];
++    if (!mine && !pend) return NULL;
++    if (!nt->_parent && !nt->_stex && !nt->_tbView && [nt nvview] == root->_i.view) {
++        if (mine) [self nvmtlRshPrime];   // sampled before this encoder's first draw: the shadow must hold the surface
++        return root->_rsh.view; }
++    [self nvmtlRshMakeCurrent:root];
++    return NULL;
++}
++// Copy a shadow back mid-encoder: close the pass, copy, restart it loading everything (as the self-bind guard does).
++- (void)nvmtlRshMakeCurrent:(NVMTLTexture *)root {
++    const BOOL mine = [self nvmtlRshOwns:root];
++    if (!mine && !(_cb->_rshPend.count && [_cb->_rshPend containsObject:root])) return;
++    { static int said; if (said++ < 8) nvlog("tiled render shadow: surf %u is read in a way the shadow cannot stand in for - copied back first",
++                                             root->_surf ? (unsigned)IOSurfaceGetID(root->_surf) : 0u); }
++    const BOOL open = _begun && _cb->_c.in_rp;
++    const BOOL visWas = (_visActive || _visPending); const NSUInteger visOff = _visOffset;
++    if (open) { [self nvmtlCloseVisibility]; nvmtl_vk_cmd_end_render(&_cb->_c); }
++    if (mine) {
++        // the pending copy of an earlier encoder (if any) is older than what this encoder drew - drop it, write ours
++        const BOOL wasPend = _cb->_rshPend.count && [_cb->_rshPend containsObject:root];
++        if (wasPend) [_cb->_rshPend removeObjectIdenticalTo:root];
++        if ((_rshPrimed || wasPend) && nvmtl_vk_cmd_rsh_copy(&_cb->_c, &root->_rsh, &root->_i)) nvlog("tiled render shadow: mid-encoder copy-back FAILED");
++    } else nvmtl_rsh_flush_one(_cb, root);
++    if (open) {
++        if (![self nvmtlBeginPassLoad:(_load | NVMTL_LOAD_ALL)]) { nvlog("tiled render shadow: pass restart FAILED - encoder refused"); _refused = YES; return; }
++        nvmtl_vk_cmd_set_cull(&_cb->_c, _cull);
++        if (_hasVP) nvmtl_vk_cmd_set_viewport(&_cb->_c, _vp[0], _vp[1], _vp[2], _vp[3], _vp[4], _vp[5]);
++        if (_hasSC) nvmtl_vk_cmd_set_scissor(&_cb->_c, (int32_t)_sc[0], (int32_t)_sc[1], _sc[2], _sc[3]);
++        [self nvmtlApplyDepthStencil];
++        if (visWas) [self setVisibilityResultMode:MTLVisibilityResultModeCounting offset:visOff];
++    }
++}
++- (nvk_image *)nvmtlLiveImageOf:(NVMTLTexture *)sr {
++    for (uint32_t i = 0; _rshAny && i < NVMTL_NCOL; i++) if (_rshRoot[i] == sr) return &sr->_rsh;
++    return [sr nvi];
++}
+ - (BOOL)nvmtlBeginPassLoad:(uint32_t)load {
+     if (_refused || !_ps) return NO;
++    [self nvmtlRshPrime];
+     uint32_t keep = _pass.load; _pass.load = load;
+     int rc = nvmtl_vk_cmd_begin_pass(&_cb->_c, &_pass, &_ps->_p);
+     _pass.load = keep;
+@@ -2603,6 +2911,7 @@ - (void)setRenderPipelineState:(id<MTLRenderPipelineState>)ps {
+     nvmtl_retain_resource(_cb, p);
+     if (!_begun) {
+         if (_refused) return;
++        [self nvmtlRshPrime];
+         if (nvmtl_vk_cmd_begin_pass(&_cb->_c, &_pass, &p->_p)) {
+             nvlog("encoder: begin render FAILED — nothing is recorded for this pipeline");
+             if (_pass.sample_pattern.count) [self nvmtlSamplePositionError:@"sample positions: cannot begin requested render pass"];
+@@ -2698,6 +3007,9 @@ - (void)setVertexTexture:(id<MTLTexture>)t atIndex:(NSUInteger)i {
+     if (!nt) { nvlog("setVertexTexture: nil at index %lu", (unsigned long)i); return; }
+     nvmtl_retain_resource(_cb, nt);
+     [nt nvmtlSurfaceIn];
++    { void *rshView = [self nvmtlRshSampleView:nt];
++      if (rshView) { if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, rshView)) nvlog("setVertexTexture: render-shadow bind FAILED");
++          nvmtl_vk_bind_storage_view(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, NULL); return; } }
+     if (nt->_tbView) nvmtl_vk_bind_texel_view(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, nt->_tbView, nt->_tbStorage);
+     else {
+     if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, [nt nvview])) nvlog("setVertexTexture: bind FAILED");
+@@ -2726,7 +3038,126 @@ - (void)setVertexSamplerState:(id<MTLSamplerState>)s atIndex:(NSUInteger)i {
+     nvtrace("VERTEX SAMPLER[%lu] pixel=%d bound=%d",(unsigned long)i,ns && ns->_pixelState!=nil,ns!=nil);
+     if(ns) { if (!_cb->_resources) _cb->_resources=[NVMTLResSet new];[_cb->_resources addObject:ns]; }
+ }
++// The pass samples the shared-VRAM (linear alias) surface it renders into - a same-subpass feedback loop whose read is
++// undefined on this driver (the black blocks and missing corners at the defocus moment). The bind redirects the slot to
++// a private shadow of the surface; nvmtlSelfRefresh (called before every draw that keeps the slot bound) re-copies the
++// attachment into the shadow, ending and restarting the render pass around the copy, so each sampling draw reads the
++// accumulation of every earlier draw - exactly what a real feedback loop yields. A snapshot only at bind time is NOT
++// enough: draws issued after the bind but before the sampling draw also contribute, and a stale shadow degenerated
++// WindowServer's corner coverage (rounded corners came out square). NULL keeps the normal path. Only shared surfaces
++// need this: private tiled images read back correctly through the existing paths.
++- (void *)nvmtlSelfBindView:(NVMTLTexture *)nt {
++    NVMTLTexture *rt = nt->_parent ? nt->_parent : nt;
++    if (!_target || !rt->_vramOn || nt->_tbView) return NULL;
++    NVMTLTexture *sr = _target->_parent ? _target->_parent : _target;
++    if (rt != sr) return NULL;
++    static int said; if (said++ < 8) nvlog("self-bind guard: surf %u is sampled inside its own render pass - shadowing",
++                                           sr->_surf ? (unsigned)IOSurfaceGetID(sr->_surf) : 0u);
++    if (!sr->_selfShadowOn) {
++        if (nvmtl_vk_selfshadow_create([sr nvi], &sr->_selfShadow)) {
++            nvlog("self-bind guard: shadow create FAILED for surf %u", sr->_surf ? (unsigned)IOSurfaceGetID(sr->_surf) : 0u);
++            return NULL; }
++        sr->_selfShadowOn = YES;
++    }
++    if (!_selfMark || _selfSurf != sr) _selfSynced = NO;   // draws while unmarked were not tracked: the next snapshot is whole
++    _selfSurf = sr; _selfMark = YES; _selfBindTex = nt; _selfOwnBound = NO;
++    return sr->_selfShadow.view;
++}
++
++// What the draw about to be recorded can write: its scissor rect (Metal's default scissor is the whole attachment).
++// Rects that touch merge into their bounding box, so the list stays disjoint; past 8 the whole image counts as drawn.
++- (void)nvmtlSelfNoteDraw {
++    nvk_image *a = [_selfSurf nvi];
++    if (_selfDirtyAll || !_hasSC || !a || _sc[0] >= a->w || _sc[1] >= a->h) { _selfDirtyAll = _selfDirtyAll || !_hasSC; return; }
++    uint32_t x0 = _sc[0], y0 = _sc[1], x1 = x0 + MIN(_sc[2], a->w - x0), y1 = y0 + MIN(_sc[3], a->h - y0);
++    if (x1 <= x0 || y1 <= y0) return;
++    for (uint32_t i = 0; i < _selfDirtyN; ) {
++        uint32_t *d = _selfDirty[i];
++        if (x0 > d[0] + d[2] || d[0] > x1 || y0 > d[1] + d[3] || d[1] > y1) { i++; continue; }
++        x0 = MIN(x0, d[0]); y0 = MIN(y0, d[1]); x1 = MAX(x1, d[0] + d[2]); y1 = MAX(y1, d[1] + d[3]);
++        memmove(d, _selfDirty[--_selfDirtyN], sizeof _selfDirty[0]); i = 0;   // re-check the grown rect against the rest
++    }
++    if (_selfDirtyN == 8) { _selfDirtyAll = YES; return; }
++    _selfDirty[_selfDirtyN][0] = x0; _selfDirty[_selfDirtyN][1] = y0; _selfDirty[_selfDirtyN][2] = x1 - x0; _selfDirty[_selfDirtyN][3] = y1 - y0; _selfDirtyN++;
++}
++// Bring the shadow up to date with every draw recorded so far. Must run before a draw that samples the shadow: the
++// copy needs the render pass closed (and an occlusion query may not cross vkCmdEndRenderPass - close it and re-arm the
++// mode after the restart; endEncoding already sums multiple queries per offset).
++// WindowServer draws one sampling quad after another (window corners, shadows), and a whole-surface copy of its 28 MB
++// framebuffer before each one cost ~0.24 ms - 36 of them in a Cmd-Tab frame. The first snapshot in an encoder (or after
++// untracked writes) copies everything; later ones copy only the scissor rects drawn since, and none at all when nothing
++// was drawn.
++// Core Animation's uber shaders (fixed_frag_*) emulate framebuffer fetch on GPUs without it: attachment_0..2 (texture
++// slots 0..2) are the render targets themselves and are only read at the fragment's own pixel. A per-pixel read needs
++// no copy - only the earlier draws' writes made visible - so the pass is closed, a full barrier recorded and the pass
++// restarted (~15 us) instead of snapshotting the 28 MB framebuffer (~240 us; WindowServer issued 36 of them in a Cmd-Tab
++// frame). The slot then samples the surface itself. Each such draw is one quad (two triangles that do not overlap), so a
++// pixel is never read after the same draw wrote it. Only for the surface's own linear image: with a tiled render shadow
++// the live image is the shadow and the copy path stays. A draw recorded before the pass begins keeps the copy path too
++// (its read would race the pass's load action).
++- (BOOL)nvmtlSelfFetchMode {
++    if (_selfSlot > 2 || !_ps || ![_ps->_fname hasPrefix:@"fixed_frag_"] || !_selfBindTex) return NO;
++    return [self nvmtlLiveImageOf:_selfSurf] == [_selfSurf nvi];
++}
++- (BOOL)nvmtlSelfRefresh {
++    if (!_selfMark || !_selfSurf) return YES;
++    if (_begun && _cb->_c.in_rp && [self nvmtlSelfFetchMode]) {
++        const BOOL visWas = (_visActive || _visPending); const NSUInteger visOff = _visOffset;
++        [self nvmtlCloseVisibility];
++        nvmtl_vk_cmd_end_render(&_cb->_c);
++        nvmtl_vk_cmd_barrier(&_cb->_c);
++        if (![self nvmtlBeginPassLoad:(_load | NVMTL_LOAD_ALL)]) { nvlog("self-bind guard: pass restart FAILED - encoder refused"); _refused = YES; return NO; }
++        nvmtl_vk_cmd_set_cull(&_cb->_c, _cull);
++        if (_hasVP) nvmtl_vk_cmd_set_viewport(&_cb->_c, _vp[0], _vp[1], _vp[2], _vp[3], _vp[4], _vp[5]);
++        if (_hasSC) nvmtl_vk_cmd_set_scissor(&_cb->_c, (int32_t)_sc[0], (int32_t)_sc[1], _sc[2], _sc[3]);
++        [self nvmtlApplyDepthStencil];
++        if (visWas) [self setVisibilityResultMode:MTLVisibilityResultModeCounting offset:visOff];
++        if (!_selfOwnBound) {
++            if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_FRAGMENT, _selfSlot, [_selfBindTex nvview])) nvlog("self-bind guard: own-view bind FAILED");
++            _selfOwnBound = YES; _selfSynced = NO;   // the shadow stops following the draws
++        }
++        nvtrace("SELFFETCH surf %u barrier before draw", _selfSurf->_surf ? (unsigned)IOSurfaceGetID(_selfSurf->_surf) : 0u);
++        return YES;
++    }
++    if (_selfOwnBound) {   // back to the copy path: the slot samples the shadow again
++        if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_FRAGMENT, _selfSlot, _selfSurf->_selfShadow.view)) nvlog("self-bind guard: shadow re-bind FAILED");
++        _selfOwnBound = NO; _selfSynced = NO;
++    }
++    if (_begun && _cb->_c.in_rp) {
++        nvk_image *live = [self nvmtlLiveImageOf:_selfSurf];
++        const BOOL part = _selfSynced && live == _selfSyncImg && !_selfDirtyAll;
++        if (part && !_selfDirtyN) { [self nvmtlSelfNoteDraw]; return YES; }
++        const BOOL visWas = (_visActive || _visPending); const NSUInteger visOff = _visOffset;
++        [self nvmtlCloseVisibility];
++        nvmtl_vk_cmd_end_render(&_cb->_c);
++        if (nvmtl_vk_cmd_selfsnapshot_rects(&_cb->_c, live, &_selfSurf->_selfShadow, (const uint32_t (*)[4])_selfDirty, part ? _selfDirtyN : 0)) {
++            nvlog("self-bind guard: snapshot FAILED (the draw samples a stale shadow)"); _selfSynced = NO; }
++        else { _selfSynced = YES; _selfSyncImg = live; }
++        _selfDirtyN = 0; _selfDirtyAll = NO;
++        // The restart must LOAD what the first half of the encoder drew: the original action (Clear/DontCare) would wipe
++        // it. NVMTL_LOAD_ALL is masked down to the attachments the pipeline actually draws (nvmtl_rp_variant).
++        if (![self nvmtlBeginPassLoad:(_load | NVMTL_LOAD_ALL)]) { nvlog("self-bind guard: pass restart FAILED - encoder refused"); _refused = YES; return NO; }
++        nvmtl_vk_cmd_set_cull(&_cb->_c, _cull);
++        if (_hasVP) nvmtl_vk_cmd_set_viewport(&_cb->_c, _vp[0], _vp[1], _vp[2], _vp[3], _vp[4], _vp[5]);
++        if (_hasSC) nvmtl_vk_cmd_set_scissor(&_cb->_c, (int32_t)_sc[0], (int32_t)_sc[1], _sc[2], _sc[3]);
++        [self nvmtlApplyDepthStencil];
++        if (visWas) [self setVisibilityResultMode:MTLVisibilityResultModeCounting offset:visOff];
++        nvtrace("SELFREFRESH surf %u before draw", _selfSurf->_surf ? (unsigned)IOSurfaceGetID(_selfSurf->_surf) : 0u);
++        [self nvmtlSelfNoteDraw];
++    } else if (!_cb->_c.in_rp) {
++        _selfSynced = NO;   // the pass has not begun: its load action (a clear) still rewrites the whole attachment
++        [self nvmtlRshPrime];   // the snapshot reads the render shadow: fill it from the surface first
++        if (nvmtl_vk_cmd_selfsnapshot(&_cb->_c, [self nvmtlLiveImageOf:_selfSurf], &_selfSurf->_selfShadow)) {
++            nvlog("self-bind guard: snapshot FAILED (no pass open)"); return NO; }
++        nvtrace("SELFREFRESH surf %u taken before the pass begins", _selfSurf->_surf ? (unsigned)IOSurfaceGetID(_selfSurf->_surf) : 0u);
++    }
++    return YES;
++}
+ - (void)setFragmentTexture:(id<MTLTexture>)t atIndex:(NSUInteger)i {
++    if (_selfMark && i == _selfSlot) {
++        NVMTLTexture *nrt = (NVMTLTexture *)t; nrt = nrt ? (nrt->_parent ? nrt->_parent : nrt) : nil;
++        if (nrt != _selfSurf) _selfMark = NO;   // the slot that sampled the target got something else: stop refreshing
++    }
+     NVMTLTexture *nt = (NVMTLTexture *)t;
+     if (!nt) { nvlog("setFragmentTexture: nil at index %lu", (unsigned long)i); return; }
+     nvmtl_retain_resource(_cb, nt);
+@@ -2734,6 +3165,19 @@ - (void)setFragmentTexture:(id<MTLTexture>)t atIndex:(NSUInteger)i {
+     [nt nvmtlSurfaceIn];
+     { NVMTLTexture *rt = nt->_parent ? nt->_parent : nt; nvtrace("FTEX[%lu] %ux%u surf %u view %d", (unsigned long)i, [nt nvi]->w, [nt nvi]->h,
+         rt->_surf ? (unsigned)IOSurfaceGetID(rt->_surf) : 0u, nt->_parent != nil); }
++    void *shadowView = [self nvmtlSelfBindView:nt];
++    if (shadowView) {
++        _selfSlot = (uint32_t)i;
++        if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, shadowView)) nvlog("setFragmentTexture: shadow bind FAILED");
++        nvmtl_vk_bind_storage_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, NULL);
++        return;
++    }
++    void *rshView = [self nvmtlRshSampleView:nt];
++    if (rshView) {
++        if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, rshView)) nvlog("setFragmentTexture: render-shadow bind FAILED");
++        nvmtl_vk_bind_storage_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, NULL);
++        return;
++    }
+     if (nt->_tbView) nvmtl_vk_bind_texel_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, nt->_tbView, nt->_tbStorage);
+     else {
+     if (nvmtl_vk_bind_texture_view(&_cb->_c, NVMTL_SET_FRAGMENT, (uint32_t)i, [nt nvview])) nvlog("setFragmentTexture: bind FAILED");
+@@ -2743,6 +3187,7 @@ - (void)setFragmentTexture:(id<MTLTexture>)t atIndex:(NSUInteger)i {
+ - (void)drawPrimitives:(MTLPrimitiveType)type vertexStart:(NSUInteger)start vertexCount:(NSUInteger)count
+          instanceCount:(NSUInteger)instances baseInstance:(NSUInteger)baseInstance {
+     if (!_begun) { nvlog("encoder: draw with no pipeline set"); return; }
++    if (_selfMark && ![self nvmtlSelfRefresh]) return;
+     if (![self nvmtlBindSamplerPipeline]) return;
+     nvtrace("DRAW type %u | vs %s | fs %s | blend %s", (unsigned)type, _ps ? _ps->_vname.UTF8String : "-", _ps ? _ps->_fname.UTF8String : "-", _ps ? _ps->_blend.UTF8String : "-");
+     if (nvmtl_trace_on()) { char bufs_[600]; nvmtl_vk_trace_buffers(&_cb->_c, bufs_, sizeof bufs_); nvtrace("  BUFS%s", bufs_); }
+@@ -2789,6 +3234,7 @@ - (void)nvmtlPatches:(NSUInteger)n start:(NSUInteger)start count:(NSUInteger)cou
+                 cpib:(id<MTLBuffer>)cpib cpibOff:(NSUInteger)cpibOff indexed:(BOOL)indexed instances:(NSUInteger)instances
+                 base:(NSUInteger)base indirect:(id<MTLBuffer>)ind indOff:(NSUInteger)indOff {
+     if (!_begun) { nvlog("encoder: patch draw with no pipeline set"); return; }
++    _selfSynced = NO;   // patch draws skip the self-bind refresh: their writes are not tracked
+     if (!_ps || !_ps->_p.tess) { nvlog("tess draw: the pipeline (%s) has no post-tessellation vertex function — NOT drawn", _ps ? _ps->_vname.UTF8String : "-"); return; }
+     if (n != _ps->_p.tess_n) { nvlog("tess draw: %lu control points per patch, %s takes %u — NOT drawn", (unsigned long)n, _ps->_vname.UTF8String ?: "?", _ps->_p.tess_n); return; }
+     if (!_tfb) { nvlog("tess draw: no tessellation factor buffer is set — NOT drawn"); return; }
+@@ -2872,6 +3318,7 @@ - (void)endEncoding {
+     _cb->_nEnd++;
+     [self nvmtlCloseVisibility];
+     if (_begun) nvmtl_vk_cmd_end_render(&_cb->_c);
++    if (_begun) [self nvmtlRshFlush]; else [self nvmtlRshUndo];
+     NSMutableDictionary *groups = [NSMutableDictionary new];
+     BOOL needScratch = NO;
+     for (NSArray *record in _visRecords) {
+@@ -2996,6 +3443,7 @@ - (void)drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:(NSUInteger)coun
+                   indexBuffer:(id<MTLBuffer>)ib indexBufferOffset:(NSUInteger)off
+                 instanceCount:(NSUInteger)instances baseVertex:(NSInteger)baseVertex baseInstance:(NSUInteger)baseInstance {
+     if (!_begun) { nvlog("drawIndexedPrimitives with no pipeline set"); return; }
++    if (_selfMark && ![self nvmtlSelfRefresh]) return;
+     NVMTLBuffer *b = (NVMTLBuffer *)ib;
+     if (!b) { nvlog("drawIndexedPrimitives with no index buffer"); return; }
+     nvmtl_retain_resource(_cb, b);
+@@ -3095,12 +3543,16 @@ - (void)setFragmentSamplerStates:(const id<MTLSamplerState> __unsafe_unretained
+ - (void)setVertexSamplerStates:(const id<MTLSamplerState> __unsafe_unretained [])ss lodMinClamps:(const float *)lo lodMaxClamps:(const float *)hi withRange:(NSRange)r {
+     for(NSUInteger k=0;k<r.length;k++) [self setVertexSamplerState:ss[k] lodMinClamp:lo[k] lodMaxClamp:hi[k] atIndex:r.location+k];
+ }
+-- (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u { nvmtl_retain_resource(_cb, r); }
++- (void)nvmtlRshUse:(id)r {
++    if (![r isKindOfClass:[NVMTLTexture class]]) return;
++    NVMTLTexture *t = (NVMTLTexture *)r; [self nvmtlRshMakeCurrent:t->_parent ? t->_parent : t];
++}
++- (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u { nvmtl_retain_resource(_cb, r); [self nvmtlRshUse:r]; }
+ - (void)useHeaps:(const id<MTLHeap> __unsafe_unretained [])h count:(NSUInteger)n {}
+ - (void)useHeaps:(const id<MTLHeap> __unsafe_unretained [])h count:(NSUInteger)n stages:(MTLRenderStages)st { nvtrace("USEHEAPS %lu stages %lu", (unsigned long)n, (unsigned long)st); }
+-- (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u stages:(MTLRenderStages)st { nvmtl_retain_resource(_cb, r); nvtrace("USERES %s %p usage %lu stages %lu", object_getClassName(r), (__bridge void *)r, (unsigned long)u, (unsigned long)st); }
+-- (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u { for (NSUInteger i=0;i<n;i++) nvmtl_retain_resource(_cb,r[i]); }
+-- (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u stages:(MTLRenderStages)st { for (NSUInteger i=0;i<n;i++) nvmtl_retain_resource(_cb,r[i]); nvtrace("USERES x%lu usage %lu stages %lu", (unsigned long)n, (unsigned long)u, (unsigned long)st); }
++- (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u stages:(MTLRenderStages)st { nvmtl_retain_resource(_cb, r); [self nvmtlRshUse:r]; nvtrace("USERES %s %p usage %lu stages %lu", object_getClassName(r), (__bridge void *)r, (unsigned long)u, (unsigned long)st); }
++- (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u { for (NSUInteger i=0;i<n;i++) { nvmtl_retain_resource(_cb,r[i]); [self nvmtlRshUse:r[i]]; } }
++- (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u stages:(MTLRenderStages)st { for (NSUInteger i=0;i<n;i++) { nvmtl_retain_resource(_cb,r[i]); [self nvmtlRshUse:r[i]]; } nvtrace("USERES x%lu usage %lu stages %lu", (unsigned long)n, (unsigned long)u, (unsigned long)st); }
+ - (void)useHeap:(id<MTLHeap>)h {}
+ - (void)useHeap:(id<MTLHeap>)h stages:(MTLRenderStages)st {}
+ - (void)sampleCountersInBuffer:(id)sb atSampleIndex:(NSUInteger)i withBarrier:(BOOL)b { nvmtl_sample_counter(_cb, sb, i, self, b); }
+@@ -3114,6 +3566,7 @@ - (void)drawPrimitives:(MTLPrimitiveType)type indirectBuffer:(id<MTLBuffer>)buf
+     if (!nb) { nvlog("drawPrimitives:indirectBuffer: nil"); return; }
+     nvmtl_retain_resource(_cb, nb);
+     if (!_begun) { nvlog("drawPrimitives:indirectBuffer: no render pass"); return; }
++    if (_selfMark && ![self nvmtlSelfRefresh]) return;
+     if (![self nvmtlBindSamplerPipeline]) return;
+     nvtrace("DRAW type %u | vs %s | fs %s | blend %s", (unsigned)type, _ps ? _ps->_vname.UTF8String : "-", _ps ? _ps->_fname.UTF8String : "-", _ps ? _ps->_blend.UTF8String : "-");
+     if (nvmtl_trace_on()) { char bufs_[600]; nvmtl_vk_trace_buffers(&_cb->_c, bufs_, sizeof bufs_); nvtrace("  BUFS%s", bufs_); }
+@@ -3128,6 +3581,7 @@ - (void)drawIndexedPrimitives:(MTLPrimitiveType)type indexType:(MTLIndexType)it
+     nvmtl_retain_resource(_cb, ni);
+     nvmtl_retain_resource(_cb, nb);
+     if (!_begun) { nvlog("drawIndexedPrimitives:indirectBuffer: no render pass"); return; }
++    if (_selfMark && ![self nvmtlSelfRefresh]) return;
+     if (![self nvmtlBindSamplerPipeline]) return;
+     nvtrace("DRAW type %u | vs %s | fs %s | blend %s", (unsigned)type, _ps ? _ps->_vname.UTF8String : "-", _ps ? _ps->_fname.UTF8String : "-", _ps ? _ps->_blend.UTF8String : "-");
+     if (nvmtl_trace_on()) { char bufs_[600]; nvmtl_vk_trace_buffers(&_cb->_c, bufs_, sizeof bufs_); nvtrace("  BUFS%s", bufs_); }
+@@ -4213,6 +4667,20 @@ static NSUInteger nvmtl_texture_slice_count(NVMTLTexture *t) {
+     MTLTextureType type = t.textureType;
+     return type == MTLTextureTypeCube ? 6 : type == MTLTextureTypeCubeArray ? t.arrayLength * 6 : t.arrayLength;
+ }
++// Tiled render shadow, blit side. A blit that READS a surface whose newest pixels are in a pending shadow reads the
++// shadow (Graphite copies the backdrop of every filter out of the window texture - flushing there cost two whole-surface
++// copies per filter); a blit that WRITES the surface (or a CPU synchronize) first puts the shadow back.
++static nvk_image *nvmtl_rsh_blit_src(NVMTLCommandBuffer *cb, NVMTLTexture *t) {
++    NVMTLTexture *root = t->_parent ? t->_parent : t;
++    nvmtl_rsh_flush_alias(cb, root);
++    if (!cb->_rshPend.count || ![cb->_rshPend containsObject:root]) return [t nvi];
++    if (root->_rshOn && !t->_parent && !t->_baseLevel && !t->_baseSlice) return &root->_rsh;
++    nvmtl_rsh_flush_one(cb, root); return [t nvi];
++}
++static void nvmtl_rsh_blit_dst(NVMTLCommandBuffer *cb, NVMTLTexture *t) {
++    NVMTLTexture *root = t->_parent ? t->_parent : t;
++    nvmtl_rsh_flush_alias(cb, root); nvmtl_rsh_flush_one(cb, root);
++}
+ @implementation NVMTLBlitCommandEncoder
+ - (unsigned long long)globalTraceObjectID { return nvmtl_global_trace_id(self); }
+ - (void)copyFromBuffer:(id<MTLBuffer>)src sourceOffset:(NSUInteger)so toBuffer:(id<MTLBuffer>)dst
+@@ -4248,7 +4716,8 @@ - (void)copyFromTexture:(id<MTLTexture>)src sourceSlice:(NSUInteger)ss sourceLev
+           (unsigned long)so.y, (unsigned long)size.width, (unsigned long)size.height, [d nvi]->w, [d nvi]->h, nvmtl_surf_id(d), (unsigned long)dof.x, (unsigned long)dof.y);
+       g_trace_mute = was; }
+     [s nvmtlSurfaceIn]; [d nvmtlSurfaceIn]; nvmtl_surf_dirty(_cb, d);
+-    if (nvmtl_vk_cmd_copy_image_sub(&_cb->_c, [s nvi], (uint32_t)sl + s->_baseLevel, (uint32_t)ss + s->_baseSlice, (uint32_t)so.x, (uint32_t)so.y,
++    nvmtl_rsh_blit_dst(_cb, d); nvk_image *simg = nvmtl_rsh_blit_src(_cb, s);
++    if (nvmtl_vk_cmd_copy_image_sub(&_cb->_c, simg, (uint32_t)sl + s->_baseLevel, (uint32_t)ss + s->_baseSlice, (uint32_t)so.x, (uint32_t)so.y,
+                                 [d nvi], (uint32_t)dl + d->_baseLevel, (uint32_t)ds + d->_baseSlice, (uint32_t)dof.x, (uint32_t)dof.y,
+                                 (uint32_t)size.width, (uint32_t)size.height))
+         nvlog("blit copyFromTexture: FAILED");
+@@ -4275,7 +4744,7 @@ - (void)generateMipmapsForTexture:(id<MTLTexture>)tex {
+     if (!_cb->_resources) _cb->_resources = [NVMTLResSet new];
+     [_cb->_resources addObject:t];
+     { int was = nvtrace_scope([t nvi]->w, [t nvi]->h); nvtrace("MIPS tex %ux%u surf %u", [t nvi]->w, [t nvi]->h, nvmtl_surf_id(t)); g_trace_mute = was; }
+-    [t nvmtlSurfaceIn]; nvmtl_surf_dirty(_cb, t);
++    [t nvmtlSurfaceIn]; nvmtl_surf_dirty(_cb, t); nvmtl_rsh_blit_dst(_cb, t);
+     if (nvmtl_vk_cmd_image_gen_mipmaps(&_cb->_c, [t nvi])) nvlog("generateMipmapsForTexture: FAILED");
+ }
+ - (void)copyFromTexture:(id<MTLTexture>)src sourceSlice:(NSUInteger)ss sourceLevel:(NSUInteger)sl toTexture:(id<MTLTexture>)dst
+@@ -4338,8 +4807,8 @@ - (void)copyFromBuffer:(id<MTLBuffer>)src sourceOffset:(NSUInteger)so sourceByte
+     [t nvmtlSurfaceIn]; nvmtl_surf_dirty(_cb, t);
+     { BOOL vol = [t nvi]->mtl_type == 7; NSUInteger nz = vol ? (size.depth ? size.depth : 1) : 1; NSUInteger per = img ? img : row * size.height; int rc = 0;
+       for (NSUInteger zi = 0; zi < nz && !rc; zi++)
+-          rc = nvmtl_vk_cmd_copy_buffer_to_image_level_layer(&_cb->_c, &b->_b, so + zi * per, (uint32_t)row, [t nvi],
+-                                      (uint32_t)dof.x, (uint32_t)dof.y, (uint32_t)size.width, (uint32_t)size.height, (uint32_t)dl + t->_baseLevel, (uint32_t)(vol ? dof.z + zi : ds + t->_baseSlice));
++          rc = (nvmtl_rsh_blit_dst(_cb, t), nvmtl_vk_cmd_copy_buffer_to_image_level_layer(&_cb->_c, &b->_b, so + zi * per, (uint32_t)row, [t nvi],
++                                      (uint32_t)dof.x, (uint32_t)dof.y, (uint32_t)size.width, (uint32_t)size.height, (uint32_t)dl + t->_baseLevel, (uint32_t)(vol ? dof.z + zi : ds + t->_baseSlice)));
+       if (rc) nvlog("blit copyFromBuffer:toTexture: FAILED (level %lu slice %lu)", (unsigned long)dl, (unsigned long)ds); }
+ }
+ - (void)copyFromBuffer:(id<MTLBuffer>)src sourceOffset:(NSUInteger)so sourceBytesPerRow:(NSUInteger)row
+@@ -4374,7 +4843,7 @@ - (void)copyFromTexture:(id<MTLTexture>)src sourceSlice:(NSUInteger)ss sourceLev
+       g_trace_mute = was; }
+     { BOOL vol = [t nvi]->mtl_type == 7; NSUInteger nz = vol ? (size.depth ? size.depth : 1) : 1; NSUInteger per = img ? img : row * size.height; int rc = 0;
+       for (NSUInteger zi = 0; zi < nz && !rc; zi++)
+-          rc = nvmtl_vk_cmd_copy_image_to_buffer_level_layer(&_cb->_c, [t nvi], (uint32_t)so.x, (uint32_t)so.y,
++          rc = nvmtl_vk_cmd_copy_image_to_buffer_level_layer(&_cb->_c, nvmtl_rsh_blit_src(_cb, t), (uint32_t)so.x, (uint32_t)so.y,
+                                       (uint32_t)size.width, (uint32_t)size.height, &b->_b, dof + zi * per, (uint32_t)row, (uint32_t)sl + t->_baseLevel, (uint32_t)(vol ? so.z + zi : ss + t->_baseSlice));
+       if (rc) nvlog("blit copyFromTexture:toBuffer: FAILED (level %lu slice %lu)", (unsigned long)sl, (unsigned long)ss); }
+ }
+@@ -4408,6 +4877,7 @@ - (void)synchronizeResource:(id<MTLResource>)r {
+     }
+     if ([(id)r isKindOfClass:[NVMTLTexture class]]) {
+         NVMTLTexture *t = (NVMTLTexture *)r;
++        nvmtl_rsh_blit_dst(_cb, t);
+         NVMTLBuffer *bb = t->_backBuf ? t->_backBuf : (t->_parent ? t->_parent->_backBuf : nil);
+         if (bb && bb->_shadow.map) {
+             [_cb->_resources addObject:bb];
+@@ -4454,6 +4924,7 @@ - (NSMutableDictionary *)userDictionary {
+ }
+ - (id<MTLParallelRenderCommandEncoder>)parallelRenderCommandEncoderWithDescriptor:(MTLRenderPassDescriptor *)d {
+     nvmtl_g79_flush(self);
++    nvmtl_rsh_flush_all(self, nil);
+     NVMTLParallelRenderCommandEncoder *p = [NVMTLParallelRenderCommandEncoder new];
+     _nEnc++;
+     p->_cb = self; p->_desc = [d copy]; p->_subs = [NSMutableArray new]; p->_lock = [NSLock new];
+@@ -4483,6 +4954,8 @@ - (NSMutableDictionary *)userDictionary {
+             sr->_surf ? (unsigned)IOSurfaceGetID(sr->_surf) : 0u, e->_target->_parent != nil, (unsigned long)d.colorAttachments[0].loadAction,
+             (unsigned long)d.colorAttachments[0].storeAction, d.colorAttachments[0].clearColor.red, d.colorAttachments[0].clearColor.green,
+             d.colorAttachments[0].clearColor.blue, d.colorAttachments[0].clearColor.alpha, d.depthAttachment.texture != nil);
++        if (sr->_surf && sr->_vramOn && NVBIG_RANGE([sr nvi]->w, [sr nvi]->h)) nvbig("PASS surf %u %ux%u load %lu store %lu clear alpha %.2f seed %u synced %d at seed %u", (unsigned)IOSurfaceGetID(sr->_surf), [sr nvi]->w, [sr nvi]->h,
++            (unsigned long)d.colorAttachments[0].loadAction, (unsigned long)d.colorAttachments[0].storeAction, d.colorAttachments[0].clearColor.alpha, IOSurfaceGetSeed(sr->_surf), sr->_surfSynced, sr->_surfSeed);
+         if (sr->_surf) {
+             if (d.colorAttachments[0].loadAction == MTLLoadActionClear) { sr->_surfSeed = IOSurfaceGetSeed(sr->_surf); sr->_surfSynced = YES; sr->_surfGen = sr->_vramOn ? sr->_surfGen : nvmtl_vram_gen(sr->_surf, sr->_plane); }
+             else [sr nvmtlSurfaceIn];
+@@ -4558,7 +5031,7 @@ - (void)presentDrawable:(id<MTLDrawable>)drawable afterMinimumDuration:(CFTimeIn
+ 
+ - (void)pushDebugGroup:(NSString *)g {}
+ - (void)popDebugGroup {}
+-- (void)encodeSignalEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordSignal:e value:v]; }
++- (void)encodeSignalEvent:(id<MTLEvent>)e value:(uint64_t)v { nvmtl_rsh_flush_all(self, nil); [self nvmtlRecordSignal:e value:v]; }
+ - (void)encodeWaitForEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordWait:e value:v]; }
+ // The display-pipe swap follows this call immediately in WindowServer. NVAccel
+ // cannot order that swap after an NVK fence, so wait for the pixels to finish
+@@ -4571,8 +5044,9 @@ - (BOOL)commitAndWaitUntilSubmitted {
+     if (ws) [self waitUntilCompleted]; else [self waitUntilScheduled];
+     return self.status != MTLCommandBufferStatusError;
+ }
+-- (void)commit { [self nvmtlSubmitWithEvents]; }
++- (void)commit { if (!_committed) nvmtl_rsh_flush_all(self, nil); [self nvmtlSubmitWithEvents]; }
+ - (id<MTLComputeCommandEncoder>)computeCommandEncoder {
++    nvmtl_rsh_flush_all(self, nil);
+     NVMTLComputeCommandEncoder *e = [NVMTLComputeCommandEncoder new]; e->_cb = self; _nEnc++; return e;
+ }
+ - (id<MTLComputeCommandEncoder>)computeCommandEncoderWithDispatchType:(MTLDispatchType)t {
+@@ -4589,6 +5063,7 @@ - (void)commit { [self nvmtlSubmitWithEvents]; }
+ }
+ - (id<MTLAccelerationStructureCommandEncoder>)accelerationStructureCommandEncoder {
+     nvmtl_g79_flush(self);
++    nvmtl_rsh_flush_all(self, nil);
+     NVMTLAccelerationStructureCommandEncoder *e = [NVMTLAccelerationStructureCommandEncoder new]; e->_cb = self; _nEnc++; return e;
+ }
+ - (id<MTLAccelerationStructureCommandEncoder>)accelerationStructureCommandEncoderWithDescriptor:(MTLAccelerationStructurePassDescriptor *)d { return [self accelerationStructureCommandEncoder]; }
+@@ -4641,7 +5116,20 @@ - (void)waitUntilCompleted {
+     [_completionCondition unlock];
+     dispatch_group_wait(_callbackGroup, DISPATCH_TIME_FOREVER);
+ }
++/* ===== LOCAL-FIX: waitUntilScheduled waits for completion (+ IOSurface use count above). DO NOT REVERT - see NVMTLEventSync.m ===== */
++// Apps call waitUntilScheduled right before they hand an IOSurface to Core Animation (Chromium: Dawn's
++// WaitForCommandsToBeScheduled / ANGLE's eglWaitUntilWorkScheduledANGLE before the CA transaction). On Apple GPUs queue
++// order then guarantees WindowServer sees finished pixels; here WindowServer's NVK channel is not ordered after this
++// process's, and surfaces in private images only reach the shared pages at completion. So by default "scheduled" waits
++// for completion + publication; otherwise every Chrome element flickers between frames. NVMTL_SCHEDULED_WAIT=0: old.
++static int nvmtl_sched_waits_completion(void) {
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_SCHEDULED_WAIT"); on = !(e && e[0] == '0');
++        nvdiag_emit("waitUntilScheduled %s (NVMTL_SCHEDULED_WAIT=%s)", on ? "waits for completion (IOSurfaces published before CA presents them)" : "returns once submitted", e ? e : "unset"); }
++    return on;
++}
+ - (void)waitUntilScheduled {
++    if (nvmtl_sched_waits_completion() && _committed) { [self waitUntilCompleted]; return; }
+     _nWait++; [_completionCondition lock];
+     while (!_wasScheduled && !_executionDone) [_completionCondition wait];
+     [_completionCondition unlock];
+@@ -5204,11 +5692,19 @@ - (void)popDebugGroup {}
+ - (void)sampleCountersInBuffer:(id<MTLCounterSampleBuffer>)b atSampleIndex:(NSUInteger)i withBarrier:(BOOL)w { nvmtl_sample_counter(_cb, b, i, self, w); }
+ @end
+ 
++static uint64_t nvmtl_host_hash(const void *p, size_t n)
++{
++    const uint8_t *s = p; uint64_t h = 0x9e3779b97f4a7c15ull ^ n; size_t i = 0;
++    for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, s + i, 8); h = (h ^ w) * 0x100000001b3ull; h ^= h >> 29; }
++    for (; i < n; i++) h = (h ^ s[i]) * 0x100000001b3ull;
++    return h;
++}
+ static void nvmtl_buffer_sync_in(NVMTLBuffer *b)
+ {
+     if (!b || !b->_hostPtr || !b->_b.map || !b->_hostLen) return;
+     const uint64_t t0 = nvmtl_perf_now();
+     memcpy(b->_b.map, b->_hostPtr, b->_hostLen);
++    b->_hostInHash = nvmtl_host_hash(b->_b.map, b->_hostLen);
+     nvmtl_perf_note(NVP_SYNCIN, t0, b->_hostLen);
+ }
+ 
+@@ -5220,6 +5716,7 @@ static void nvmtl_buffer_sync_out(NVMTLBuffer *b)
+         return;
+     }
+     if (!b || !b->_hostPtr || !b->_b.map || !b->_hostLen) return;
++    if (b->_hostInHash && nvmtl_host_hash(b->_b.map, b->_hostLen) == b->_hostInHash) return;
+     const uint64_t t0 = nvmtl_perf_now();
+     memcpy(b->_hostPtr, b->_b.map, b->_hostLen);
+     nvmtl_perf_note(NVP_SYNCOUT, t0, b->_hostLen);
+diff --git a/plugin/nvmtl_bindfix.h b/plugin/nvmtl_bindfix.h
+new file mode 100644
+index 0000000..20173ae
+--- /dev/null
++++ b/plugin/nvmtl_bindfix.h
+@@ -0,0 +1,275 @@
++// nvmtl_bindfix.h - keeps the kernel's "which connection owns this fd number" table free of duplicates.
++//
++// libvulkan_nouveau (nvrm_xnu.c) gives every RM connection a placeholder fd (open("/dev/null")) and tells the NVRM kext about it
++// with IOConnectCallScalarMethod(conn, SEL_BINDFD, fd). The kext finds the connection for an fd number by scanning its client
++// table for the FIRST one bound to that number. A pooled connection that is closed keeps its old number in the kernel; when the
++// number is handed out again a second connection binds to it, and from then on the kernel's map ioctl puts the mapping context on
++// the OLD connection while the mmap goes through the new one: IOConnectMapMemory64 -> kIOReturnBadArgument, the old connection
++// keeps an unconsumed context, and every later map on that number fails with NV_ERR_STATE_IN_USE (0x63), reported by Vulkan as
++// VK_ERROR_OUT_OF_DEVICE_MEMORY. (Chrome's GPU process dies of it: pipeline creation, readbacks and submissions fail.)
++//
++// This interposes, for the Vulkan driver image only, IOConnectCallScalarMethod / IOServiceClose / IOConnectMapMemory64: before a
++// connection binds to fd N, any other connection this process bound to N is unbound first. NVMTL_BINDFIX=0 turns it off.
++#pragma once
++#include <mach-o/dyld.h>
++#include <mach-o/loader.h>
++#include <IOKit/IOKitLib.h>
++#include <pthread.h>
++#include <stdatomic.h>
++#include <stdlib.h>
++#include <string.h>
++#include <syslog.h>
++#include <dlfcn.h>
++
++struct nvbf_tuple { const void *replacement; const void *replacee; };
++extern void dyld_dynamic_interpose(const struct mach_header *mh, const struct nvbf_tuple *array, size_t count);
++
++#define NVBF_N 8192
++static struct { io_connect_t conn; int fd; } g_nvbf[NVBF_N];
++static pthread_mutex_t g_nvbf_lock = PTHREAD_MUTEX_INITIALIZER;
++static _Atomic unsigned long long g_nvbf_fixed, g_nvbf_binds, g_nvbf_mapfail, g_nvbf_full;
++
++// ---- trace: what the process did to RM connections just before a map failed -------------------------------------------
++enum { NVBF_EV_OPEN = 1, NVBF_EV_BIND, NVBF_EV_MAPIOCTL, NVBF_EV_UNMAPIOCTL, NVBF_EV_MMAP, NVBF_EV_CLOSE };
++struct nvbf_ev { unsigned long long seq; uint32_t tid, kind, a, b, c, d; uint64_t e; };
++#define NVBF_EVN 512
++static struct nvbf_ev g_nvbf_ev[NVBF_EVN];
++static _Atomic unsigned long long g_nvbf_seq;
++static void nvbf_ev(uint32_t kind, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint64_t e)
++{
++    const unsigned long long k = atomic_fetch_add(&g_nvbf_seq, 1);
++    struct nvbf_ev *v = &g_nvbf_ev[k % NVBF_EVN];
++    uint64_t tid = 0; pthread_threadid_np(NULL, &tid);
++    v->tid = (uint32_t)tid; v->kind = kind; v->a = a; v->b = b; v->c = c; v->d = d; v->e = e; v->seq = k + 1;
++}
++static void nvbf_dump(unsigned n, const char *why)
++{
++    const unsigned long long end = atomic_load(&g_nvbf_seq); static const char *nm[] = { "?", "open", "bind", "MAP_IOCTL", "UNMAP_IOCTL", "mmap", "close" };
++    syslog(LOG_ERR, "NullMoth: nvrm trace (%s): last %u RM connection events, oldest first", why, n);
++    for (unsigned long long k = end > n ? end - n : 0; k < end; k++) {
++        const struct nvbf_ev *v = &g_nvbf_ev[k % NVBF_EVN]; if (v->seq != k + 1) continue;
++        syslog(LOG_ERR, "NullMoth: nvrm trace #%llu tid %x %-12s a=%u b=%u c=%u d=0x%x e=0x%llx", v->seq, v->tid, nm[v->kind < 7 ? v->kind : 0], v->a, v->b, v->c, v->d, (unsigned long long)v->e);
++    }
++}
++#define NVBF_MAPPED 4096
++static struct { uint32_t hClient, hMem; } g_nvbf_mapped[NVBF_MAPPED];
++
++static int nvbf_known(io_connect_t conn)
++{
++    int k = 0; pthread_mutex_lock(&g_nvbf_lock);
++    for (int i = 0; i < NVBF_N; i++) if (g_nvbf[i].conn == conn) { k = 1; break; }
++    pthread_mutex_unlock(&g_nvbf_lock); return k;
++}
++static kern_return_t nvbf_IOServiceOpen(io_service_t svc, task_port_t task, uint32_t type, io_connect_t *conn)
++{
++    const kern_return_t kr = IOServiceOpen(svc, task, type, conn);
++    if (kr != KERN_SUCCESS) { static _Atomic int nf; if (atomic_fetch_add(&nf, 1) < 40) { io_name_t cn = "?"; IOObjectGetClass(svc, cn); syslog(LOG_ERR, "NullMoth-diag: IOServiceOpen(%s, type 0x%x) FAILED 0x%x", cn, type, kr); } }
++    if (kr == KERN_SUCCESS && conn && *conn && (IOObjectConformsTo(svc, "NVAccel") || IOObjectConformsTo(svc, "NVRM"))) {
++        nvbf_ev(NVBF_EV_OPEN, (uint32_t)*conn, type, 0, 0, 0);
++        pthread_mutex_lock(&g_nvbf_lock);
++        int placed = 0;
++        for (int i = 0; i < NVBF_N; i++) if (!g_nvbf[i].conn || g_nvbf[i].conn == *conn) { g_nvbf[i].conn = *conn; g_nvbf[i].fd = -1; placed = 1; break; }
++        if (!placed) atomic_fetch_add(&g_nvbf_full, 1);
++        pthread_mutex_unlock(&g_nvbf_lock);
++    }
++    return kr;
++}
++static kern_return_t nvbf_IOConnectCallScalarMethod(mach_port_t conn, uint32_t sel, const uint64_t *in, uint32_t inCnt, uint64_t *out, uint32_t *outCnt)
++{
++    if (sel == 3 && inCnt == 1 && in && nvbf_known(conn)) {   // SEL_BINDFD on one of our NVRM connections
++        const int64_t fd = (int64_t)in[0]; nvbf_ev(NVBF_EV_BIND, (uint32_t)conn, (uint32_t)fd, 0, 0, 0);
++        io_connect_t stale = 0; int found = 0;
++        pthread_mutex_lock(&g_nvbf_lock);
++        { const unsigned long long nb = atomic_fetch_add(&g_nvbf_binds, 1) + 1; if (nb == 1 || !(nb & (nb - 1))) syslog(LOG_ERR, "NullMoth-diag: nvrm bindfix: %llu SEL_BINDFD calls seen so far, %llu corrected", nb, (unsigned long long)atomic_load(&g_nvbf_fixed)); }
++        for (int i = 0; i < NVBF_N; i++) {
++            if (!g_nvbf[i].conn) continue;
++            if (g_nvbf[i].conn == conn) { found = 1; g_nvbf[i].fd = fd >= 0 ? (int)fd : -1; if (fd >= 0) continue; }
++            else if (fd >= 0 && g_nvbf[i].fd == (int)fd) { if (!stale) stale = g_nvbf[i].conn; g_nvbf[i].fd = -1; }
++        }
++        pthread_mutex_unlock(&g_nvbf_lock);
++        if (stale) {
++            uint64_t m = (uint64_t)(int64_t)-2;
++            IOConnectCallScalarMethod(stale, 3, &m, 1, NULL, NULL);
++            const unsigned long long k = atomic_fetch_add(&g_nvbf_fixed, 1) + 1;
++            if (k <= 8 || !(k & (k - 1)))
++                syslog(LOG_ERR, "NullMoth-diag: nvrm bindfd: fd %lld was still bound to another connection - unbound it first (#%llu of %llu binds)",
++                       (long long)fd, k, (unsigned long long)atomic_load(&g_nvbf_binds));
++        }
++    }
++    const kern_return_t rkr = IOConnectCallScalarMethod(conn, sel, in, inCnt, out, outCnt);
++    if (rkr != KERN_SUCCESS && nvbf_known(conn)) { static _Atomic int nf; if (atomic_fetch_add(&nf, 1) < 40) syslog(LOG_ERR, "NullMoth-diag: NVRM scalar method %u (in0 %lld) FAILED 0x%x", sel, (inCnt && in) ? (long long)in[0] : -1LL, rkr); }
++    return rkr;
++}
++static kern_return_t nvbf_IOServiceClose(io_connect_t conn)
++{
++    if (nvbf_known(conn)) nvbf_ev(NVBF_EV_CLOSE, (uint32_t)conn, 0, 0, 0, 0);
++    pthread_mutex_lock(&g_nvbf_lock);
++    for (int i = 0; i < NVBF_N; i++) if (g_nvbf[i].conn == conn) { g_nvbf[i].conn = 0; g_nvbf[i].fd = -1; }
++    pthread_mutex_unlock(&g_nvbf_lock);
++    return IOServiceClose(conn);
++}
++static kern_return_t nvbf_IOConnectMapMemory64(io_connect_t conn, uint32_t type, task_port_t task, mach_vm_address_t *addr, mach_vm_size_t *size, IOOptionBits opt)
++{
++    const kern_return_t kr = IOConnectMapMemory64(conn, type, task, addr, size, opt);
++    const int ours = nvbf_known(conn); if (ours) nvbf_ev(NVBF_EV_MMAP, (uint32_t)conn, (uint32_t)kr, 0, 0, size ? (uint64_t)*size : 0);
++    if (kr != KERN_SUCCESS && ours) {
++        { static _Atomic int dumped; if (atomic_fetch_add(&dumped, 1) < 3) nvbf_dump(40, "IOConnectMapMemory64 failed"); }
++        const unsigned long long k = atomic_fetch_add(&g_nvbf_mapfail, 1) + 1;
++        if (k <= 16 || !(k & (k - 1)))
++            syslog(LOG_ERR, "NullMoth: nvrm: IOConnectMapMemory64 failed 0x%x (#%llu; %llu bindfd corrections so far)", kr, k, (unsigned long long)atomic_load(&g_nvbf_fixed));
++    }
++    return kr;
++}
++
++static kern_return_t nvbf_IOConnectCallMethod(mach_port_t conn, uint32_t sel, const uint64_t *in, uint32_t inCnt, const void *inStruct, size_t inStructCnt,
++                                              uint64_t *out, uint32_t *outCnt, void *outStruct, size_t *outStructCnt)
++{
++    uint32_t cmd = 0, hmem = 0, hcli = 0, fd = 0, len = 0; uint64_t off = 0;
++    if (sel == 1 && inCnt == 1 && in && inStruct && inStructCnt >= 52 && (in[0] == 0x4E || in[0] == 0x4F) && nvbf_known(conn)) {
++        cmd = (uint32_t)in[0]; const uint8_t *b = (const uint8_t *)inStruct; memcpy(&hcli, b, 4); memcpy(&hmem, b + 8, 4);
++        if (cmd == 0x4E) { memcpy(&off, b + 16, 8); memcpy(&len, b + 24, 4); memcpy(&fd, b + 48, 4); }
++    }
++    const kern_return_t kr = IOConnectCallMethod(conn, sel, in, inCnt, inStruct, inStructCnt, out, outCnt, outStruct, outStructCnt);
++    if (cmd && kr == KERN_SUCCESS && outStruct) {
++        const uint8_t *o = (const uint8_t *)outStruct; uint32_t st = 0;
++        if (cmd == 0x4E) memcpy(&st, o + 40, 4); else memcpy(&st, o + 24, 4);
++        if (cmd == 0x4E) {
++            nvbf_ev(NVBF_EV_MAPIOCTL, (uint32_t)conn, hmem, fd, st, ((uint64_t)len << 32) | (uint32_t)off);
++            if (st == 0) { pthread_mutex_lock(&g_nvbf_lock); int dup = 0, slot = -1;
++                for (int i = 0; i < NVBF_MAPPED; i++) { if (g_nvbf_mapped[i].hMem == hmem && g_nvbf_mapped[i].hClient == hcli) dup = 1; if (slot < 0 && !g_nvbf_mapped[i].hMem) slot = i; }
++                if (slot >= 0) { g_nvbf_mapped[slot].hMem = hmem; g_nvbf_mapped[slot].hClient = hcli; }
++                pthread_mutex_unlock(&g_nvbf_lock);
++                if (dup) { static _Atomic int told; if (atomic_fetch_add(&told, 1) < 6) syslog(LOG_ERR, "NullMoth: nvrm: MAP_MEMORY of hMemory 0x%x succeeded while it is ALREADY mapped (fd %u) - RM may hand back the old mapping without a new mapping context", hmem, fd); } }
++        } else {
++            nvbf_ev(NVBF_EV_UNMAPIOCTL, (uint32_t)conn, hmem, 0, st, 0);
++            if (st == 0) { pthread_mutex_lock(&g_nvbf_lock); for (int i = 0; i < NVBF_MAPPED; i++) if (g_nvbf_mapped[i].hMem == hmem && g_nvbf_mapped[i].hClient == hcli) { g_nvbf_mapped[i].hMem = 0; break; } pthread_mutex_unlock(&g_nvbf_lock); }
++        }
++    }
++    return kr;
++}
++// dyld_dynamic_interpose does nothing here (macOS 15: checked with a stand-alone test), so the Vulkan driver's own import
++// pointers are rewritten directly (what fishhook does): every pointer-sized word in its __DATA_CONST / __DATA segments that
++// holds the address of one of the IOKit functions is replaced by the wrapper. Called right after the driver was dlopen'ed.
++#include <mach/mach.h>
++#include <mach/vm_map.h>
++static unsigned nvbf_patch_image(const struct mach_header_64 *mh, intptr_t slide, const void *const old[], const void *const rep[], unsigned n)
++{
++    unsigned hits = 0;
++    const struct load_command *lc = (const struct load_command *)(mh + 1);
++    for (uint32_t c = 0; c < mh->ncmds; c++, lc = (const struct load_command *)((const char *)lc + lc->cmdsize)) {
++        if (lc->cmd != LC_SEGMENT_64) continue;
++        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
++        if (strcmp(seg->segname, "__DATA") && strcmp(seg->segname, "__DATA_CONST")) continue;
++        uintptr_t *p = (uintptr_t *)(seg->vmaddr + slide); size_t words = seg->vmsize / sizeof(uintptr_t);
++        for (size_t w = 0; w < words; w++) for (unsigned k = 0; k < n; k++) if (p[w] == (uintptr_t)old[k]) {
++            vm_address_t pg = (vm_address_t)((uintptr_t)&p[w] & ~(uintptr_t)(vm_page_size - 1));
++            if (vm_protect(mach_task_self(), pg, vm_page_size, 0, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) continue;
++            p[w] = (uintptr_t)rep[k]; hits++;
++        }
++    }
++    return hits;
++}
++static void nvbf_install(void *lib_handle, const char *path)
++{
++    const char *e = getenv("NVMTL_BINDFIX");
++    if (e && e[0] == '0') return;
++    static int done; if (done) return; done = 1; (void)lib_handle;
++    const struct mach_header_64 *mh = NULL; intptr_t slide = 0;
++    for (uint32_t i = 0, n = _dyld_image_count(); i < n; i++) {
++        const char *nm = _dyld_get_image_name(i);
++        if (nm && ((path && !strcmp(nm, path)) || strstr(nm, "libvulkan_nouveau"))) { mh = (const struct mach_header_64 *)_dyld_get_image_header(i); slide = _dyld_get_image_vmaddr_slide(i); break; }
++    }
++    if (!mh) { syslog(LOG_ERR, "NullMoth: nvrm bindfix: Vulkan driver image not found - not installed"); return; }
++    const void *const old[5] = { (const void *)IOConnectCallMethod, (const void *)IOServiceOpen, (const void *)IOConnectCallScalarMethod, (const void *)IOServiceClose, (const void *)IOConnectMapMemory64 };
++    const void *const rep[5] = { (const void *)nvbf_IOConnectCallMethod, (const void *)nvbf_IOServiceOpen, (const void *)nvbf_IOConnectCallScalarMethod, (const void *)nvbf_IOServiceClose, (const void *)nvbf_IOConnectMapMemory64 };
++    const unsigned hits = nvbf_patch_image(mh, slide, old, rep, 5);
++    syslog(LOG_ERR, "NullMoth-diag: nvrm bindfix installed: %u import pointers of the Vulkan driver now go through the fd-binding guard (NVMTL_BINDFIX=%s)", hits, e ?: "unset");
++}
++
++
++
++#include <fcntl.h>
++#include <stdarg.h>
++#include <errno.h>
++static int nvbf_open(const char *path, int flags, ...)
++{
++    mode_t mode = 0; if (flags & O_CREAT) { va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap); }
++    int fd = open(path, flags, mode); int e = errno;
++    // The browser's GPU sandbox lets a process read /dev/null but not open it read-write (EPERM). The decoders only need the descriptor as a
++    // placeholder to bind a connection to, so read-only does the same job.
++    if (fd < 0 && e == EPERM && !strcmp(path, "/dev/null") && (flags & O_ACCMODE) == O_RDWR) {
++        fd = open(path, (flags & ~O_ACCMODE) | O_RDONLY, mode); if (fd >= 0) e = 0; else e = errno;
++        static _Atomic int nr; if (atomic_fetch_add(&nr, 1) < 4) syslog(LOG_ERR, "NullMoth-diag: /dev/null read-write refused by the sandbox - placeholder opened read-only -> %d", fd);
++    }
++    static _Atomic int n; if ((fd < 0 || n < 6) && atomic_fetch_add(&n, 1) < 40) syslog(LOG_ERR, "NullMoth-diag: decoder open(%s, 0x%x) -> %d (errno %d)", path, flags, fd, fd < 0 ? e : 0);
++    errno = e; return fd;
++}
++
++// Decoder-output probe: the NVDEC decoders write NV12 into IOSurface-backed pixel buffers with the CPU and then unlock them. Log (from
++// whichever process hosts the decoder - Chrome's GPU process or VTDecoderXPCService) whether the chroma plane really holds data at unlock.
++#include <CoreVideo/CoreVideo.h>
++static CVReturn nvbf_CVUnlock(CVPixelBufferRef pb, CVPixelBufferLockFlags fl)
++{
++    if (!(fl & kCVPixelBufferLock_ReadOnly) && CVPixelBufferGetPlaneCount(pb) == 2) {
++        static _Atomic unsigned n, nblank;
++        unsigned seq = atomic_fetch_add(&n, 1);
++        size_t w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb);
++        size_t nz[2] = {0, 0}, tot[2] = {0, 0};
++        for (int pl = 0; pl < 2; pl++) {
++            const uint8_t *b = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pb, pl); size_t bpr = CVPixelBufferGetBytesPerRowOfPlane(pb, pl);
++            size_t rows = pl ? h / 2 : h, cols = pl ? w : w; if (!b) continue;
++            for (size_t r = 0; r < rows; r += 4) for (size_t c = 0; c < cols; c += 4) { tot[pl]++; nz[pl] += b[r * bpr + c] != 0; }
++        }
++        int blank = tot[1] && nz[1] * 20 < tot[1];
++        if (blank) atomic_fetch_add(&nblank, 1);
++        if (blank || seq < 40 || (seq % 200) == 0)
++            syslog(LOG_ERR, "NullMoth-diag: DECOUT #%u %zux%zu buf %p luma %zu/%zu chroma %zu/%zu nonzero%s (blank so far %u)", seq, w, h, (void *)pb, nz[0], tot[0], nz[1], tot[1], blank ? "  <== BLANK CHROMA" : "", (unsigned)atomic_load(&nblank));
++    }
++    return CVPixelBufferUnlockBaseAddress(pb, fl);
++}
++
++// The decoder / encoder libraries carry their own copy of nvrm_xnu.c (own connection pool, own /dev/null placeholder fds, own
++// SEL_BINDFD calls). Their connections must be in the same table, or a stale binding of theirs can shadow a Vulkan connection.
++static void nvbf_install_extra(const char *path)
++{
++    const char *e = getenv("NVMTL_BINDFIX");
++    if (e && e[0] == '0') return;
++    const struct mach_header_64 *mh = NULL; intptr_t slide = 0;
++    for (uint32_t i = 0, n = _dyld_image_count(); i < n; i++) {
++        const char *nm = _dyld_get_image_name(i);
++        const char *bn = strrchr(path, '/'); bn = bn ? bn + 1 : path;
++        if (nm && strstr(nm, bn)) { mh = (const struct mach_header_64 *)_dyld_get_image_header(i); slide = _dyld_get_image_vmaddr_slide(i); break; }
++    }
++    if (!mh) { syslog(LOG_ERR, "NullMoth: nvrm bindfix: image %s not found - not installed", path); return; }
++    const void *const old[5] = { (const void *)IOConnectCallMethod, (const void *)IOServiceOpen, (const void *)IOConnectCallScalarMethod, (const void *)IOServiceClose, (const void *)IOConnectMapMemory64 };
++    const void *const rep[5] = { (const void *)nvbf_IOConnectCallMethod, (const void *)nvbf_IOServiceOpen, (const void *)nvbf_IOConnectCallScalarMethod, (const void *)nvbf_IOServiceClose, (const void *)nvbf_IOConnectMapMemory64 };
++    const unsigned hits = nvbf_patch_image(mh, slide, old, rep, 5);
++    unsigned uh = 0;
++    { const void *const oo[1] = { (const void *)open }; const void *const orr[1] = { (const void *)nvbf_open }; uh += nvbf_patch_image(mh, slide, oo, orr, 1); }
++    if (strstr(path, "nvdec")) { const void *const uo[1] = { (const void *)CVPixelBufferUnlockBaseAddress }; const void *const ur[1] = { (const void *)nvbf_CVUnlock }; uh += nvbf_patch_image(mh, slide, uo, ur, 1); }
++    syslog(LOG_ERR, "NullMoth-diag: nvrm bindfix installed on %s: %u import pointers, %u decoder-output probes", path, hits, uh);
++}
++
++// VTDecoderXPCService decodes with Apple's own AppleH264SW when the sandboxed browser asks for H.264: probe its output the same way.
++static void nvbf_sw_image_cb(const struct mach_header *mh, intptr_t slide)
++{
++    Dl_info di; if (!dladdr(mh, &di) || !di.dli_fname || !strstr(di.dli_fname, "AppleH264SW")) return;
++    const void *const uo[1] = { (const void *)CVPixelBufferUnlockBaseAddress }; const void *const ur[1] = { (const void *)nvbf_CVUnlock };
++    unsigned h = nvbf_patch_image((const struct mach_header_64 *)mh, slide, uo, ur, 1);
++    syslog(LOG_ERR, "NullMoth-diag: SW decoder %s: %u output probes installed", di.dli_fname, h);
++}
++#include <pthread.h>
++#include <unistd.h>
++// The decoder dylibs print their errors on stderr, which is /dev/null in an XPC service: forward every line to the system log.
++static void *nvbf_errfwd_thread(void *arg)
++{
++    int fd = (int)(intptr_t)arg; char buf[2048]; size_t n = 0; char c;
++    while (read(fd, &c, 1) == 1) { if (c == '\n' || n == sizeof buf - 1) { buf[n] = 0; if (n) syslog(LOG_ERR, "NullMoth-diag: STDERR %s", buf); n = 0; } else buf[n++] = c; }
++    return NULL;
++}
++static void nvbf_errfwd(void)
++{
++    int p[2]; if (pipe(p)) return; if (dup2(p[1], 2) < 0) return; close(p[1]);
++    pthread_t t; pthread_create(&t, NULL, nvbf_errfwd_thread, (void *)(intptr_t)p[0]); pthread_detach(t);
++}
++static void nvbf_watch_sw(void) { static int once; if (once++) return; nvbf_errfwd(); _dyld_register_func_for_add_image(nvbf_sw_image_cb); }
+diff --git a/plugin/nvmtl_diag.h b/plugin/nvmtl_diag.h
+new file mode 100644
+index 0000000..6b33540
+--- /dev/null
++++ b/plugin/nvmtl_diag.h
+@@ -0,0 +1,82 @@
++// IOSurface diagnostics that reach the system log even in a release build (tag "NullMoth-diag"), plus a per-surface record
++// of this process's GPU writes so a surface-in can tell when the shared VRAM is about to receive newer GPU contents.
++#pragma once
++#include <syslog.h>
++#include <stdarg.h>
++#include <stdatomic.h>
++#include <os/lock.h>
++#include <time.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <sys/time.h>
++#include <stdlib.h>
++static void nvdiag_emit(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++static void nvdiag_emit(const char *fmt, ...) {
++    char b[600]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a);
++    syslog(LOG_ERR, "NullMoth-diag: %s", b);
++}
++#define NVDIAG(lim, ...) do { static _Atomic unsigned nvd_c_; const unsigned nvd_k_ = atomic_fetch_add(&nvd_c_, 1); \
++    if (nvd_k_ < (unsigned)(lim) || !(nvd_k_ % 2000)) nvdiag_emit(__VA_ARGS__); } while (0)
++#define NVSD_N 4096
++static struct { uint32_t id; uint64_t dirty, out; uint32_t dn, on; } g_nvsd[NVSD_N];
++static os_unfair_lock g_nvsd_l = OS_UNFAIR_LOCK_INIT;
++static int nvsd_slot(uint32_t id) {
++    const unsigned h = (id * 2654435761u) % NVSD_N;
++    for (unsigned k = 0; k < 32; k++) { const unsigned i = (h + k) % NVSD_N; if (g_nvsd[i].id == id || !g_nvsd[i].id) return (int)i; }
++    return (int)h;
++}
++// what: 0 = a GPU write was encoded, 1 = the writes were published (surface-out after completion)
++static void nvsd_mark(uint32_t id, int what) {
++    if (!id) return;
++    const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    os_unfair_lock_lock(&g_nvsd_l);
++    const int i = nvsd_slot(id);
++    if (g_nvsd[i].id != id) { g_nvsd[i].id = id; g_nvsd[i].dirty = g_nvsd[i].out = 0; g_nvsd[i].dn = g_nvsd[i].on = 0; }
++    // Counted, not timestamped: a publish of frame N that lands after frame N+1 was encoded must not hide N+1's write.
++    if (what) { g_nvsd[i].out = now; if (g_nvsd[i].on < g_nvsd[i].dn) g_nvsd[i].on++; }
++    else { g_nvsd[i].dirty = now; g_nvsd[i].dn++; }
++    os_unfair_lock_unlock(&g_nvsd_l);
++}
++static int nvsd_pending(uint32_t id) {
++    if (!id) return 0;
++    os_unfair_lock_lock(&g_nvsd_l);
++    const int i = nvsd_slot(id); const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    // The age limit keeps a write that is never published (command buffer dropped) from blocking uploads for good.
++    const int p = g_nvsd[i].id == id && g_nvsd[i].dn > g_nvsd[i].on && now - g_nvsd[i].dirty < 500000000ull;
++    os_unfair_lock_unlock(&g_nvsd_l);
++    return p;
++}
++static int nvsd_guard_on(void) {
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_SURFIN_GUARD"); on = !(e && e[0] == '0');
++        nvdiag_emit("surface-in guard %s (NVMTL_SURFIN_GUARD=%s): a texture over shared IOSurface VRAM that this process has GPU writes "
++                    "in flight for does %s upload the surface's CPU pages over it", on ? "ON" : "off", e ? e : "unset", on ? "NOT" : "still"); }
++    return on;
++}
++
++// Window-sized shared-VRAM IOSurfaces (>= NVMTL_SURF_SHARE_MINPX pixels, below the 7.2M-pixel scan-out framebuffers): every
++// event on them goes to /private/var/tmp/nvmtl-big.log (not the system log: its per-call-site caps were used up at boot).
++// The budget is per process; the draw trace spends ~7 lines per draw, and the post-login window churn alone ran at ~4000
++// lines/s, so the cap must be large enough to survive a login burst plus the repro. With the trace switch absent nothing
++// is written and nothing is consumed, so the budget only ever burns while a repro is actually running.
++#define NVBIG_RANGE(w, h) ((unsigned long)(w) * (unsigned long)(h) >= 3000000ul && (unsigned long)(w) * (unsigned long)(h) < 7000000ul)
++#define NVBIG_BUDGET 2000000u
++static void nvbig(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++static void nvbig(const char *fmt, ...) {
++    static _Atomic unsigned n; static int fd = -2;
++    static _Atomic uint64_t gate_at; static _Atomic int gate_on;
++    const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
++    if (now >= atomic_load_explicit(&gate_at, memory_order_relaxed)) {
++        atomic_store_explicit(&gate_at, now + 250000000ull, memory_order_relaxed);
++        atomic_store_explicit(&gate_on, access("/private/var/tmp/nvmtl-trace-request", F_OK) == 0, memory_order_relaxed);
++    }
++    if (!atomic_load_explicit(&gate_on, memory_order_relaxed)) return;
++    if (atomic_fetch_add(&n, 1) >= NVBIG_BUDGET) return;
++    if (fd == -2) fd = open("/private/var/tmp/nvmtl-big.log", O_WRONLY | O_APPEND | O_CREAT, 0644);
++    if (fd < 0) return;
++    char b[700]; struct timeval tv; gettimeofday(&tv, NULL); struct tm tm; time_t t = tv.tv_sec; localtime_r(&t, &tm);
++    int k = snprintf(b, sizeof b, "%02d:%02d:%02d.%03d %s[%d] ", tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(tv.tv_usec / 1000), getprogname(), (int)getpid());
++    va_list a; va_start(a, fmt); k += vsnprintf(b + k, sizeof b - (size_t)k - 2, fmt, a); va_end(a);
++    if (k > (int)sizeof b - 2) k = (int)sizeof b - 2;
++    b[k++] = '\n'; (void)!write(fd, b, (size_t)k);
++}
+diff --git a/plugin/nvmtl_oslog.h b/plugin/nvmtl_oslog.h
+new file mode 100644
+index 0000000..a4a8941
+--- /dev/null
++++ b/plugin/nvmtl_oslog.h
+@@ -0,0 +1,21 @@
++// nvmtl_oslog.h - the plugin logs with syslog(), which goes through a mach service that Chrome's sandboxed GPU process may not
++// reach (its NullMoth lines never showed up). os_log is allowed everywhere, so every syslog() call of the plugin goes there.
++#pragma once
++#include <os/log.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <syslog.h>
++static int g_nvos_stderr;
++// Chrome's sandboxed GPU process cannot reach the log daemon, but it keeps its inherited stderr: NVMTL_LOG_STDERR=1 (read before the
++// plugin clears its NVMTL_ environment) copies every log line there.
++__attribute__((constructor)) static void nvos_init(void) { const char *e = getenv("NVMTL_LOG_STDERR"); g_nvos_stderr = e && *e == '1'; }
++static void nvos_syslog(int prio, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
++static void nvos_syslog(int prio, const char *fmt, ...)
++{
++    char b[1024]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
++    if (g_nvos_stderr) fprintf(stderr, "[nvmtl pid %d] %s\n", getpid(), b);
++    os_log_with_type(OS_LOG_DEFAULT, prio <= LOG_ERR ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT, "%{public}s", b);
++}
++#define syslog nvos_syslog
+diff --git a/plugin/nvmtl_vk.c b/plugin/nvmtl_vk.c
+index 380bab4..30e1e5c 100644
+--- a/plugin/nvmtl_vk.c
++++ b/plugin/nvmtl_vk.c
+@@ -15,6 +15,7 @@
+ #define VK_NO_PROTOTYPES 1
+ #include <vulkan/vulkan.h>
+ #include "nvmtl_vk.h"
++#include "nvmtl_bindfix.h"
+ #include "nvmtl_sampler_state.h"
+ static int g_sampler_anisotropy, g_sampler_mirror_clamp;
+ static int g_scalar_layout;
+@@ -48,6 +49,8 @@ static VkImageAspectFlags nvmtl_barrier_aspect(const nvk_image *img)
+ #include <limits.h>
+ #include <sys/stat.h>
+ #include <pthread.h>
++#include <dispatch/dispatch.h>
++#include <syslog.h>
+ static pthread_mutex_t g_gpu_clock_lock = PTHREAD_MUTEX_INITIALIZER;
+ static inline const char *nvmtl_pick_vk(const char *staged, const char *dev) {
+     return access(staged, R_OK) == 0 ? staged : dev;
+@@ -150,10 +153,11 @@ void nvmtl_vk_counts(uint64_t *bm, uint64_t *bg, uint64_t *im, uint64_t *ig, siz
+     X(vkCreateImageView) X(vkCreateRenderPass) X(vkCreateFramebuffer) X(vkCreateShaderModule) X(vkDestroyShaderModule) X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) \
+     X(vkDestroyPipeline) X(vkDestroyRenderPass) X(vkCreateGraphicsPipelines) X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCmdPushConstants) X(vkCreateCommandPool) X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer) \
+     X(vkCmdBeginRenderPass) X(vkCmdBindPipeline) X(vkCmdDraw) X(vkCmdEndRenderPass) X(vkEndCommandBuffer) \
+-    X(vkQueueSubmit) X(vkQueueBindSparse) X(vkCreateFence) X(vkWaitForFences) X(vkResetFences) X(vkDestroyFence) X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) X(vkCmdCopyBuffer) \
++    X(vkQueueSubmit) X(vkQueueBindSparse) X(vkCreateFence) X(vkWaitForFences) X(vkResetFences) X(vkDestroyFence) X(vkGetFenceStatus) X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) X(vkCmdCopyBuffer) \
+     X(vkCmdPipelineBarrier) X(vkCmdClearColorImage) X(vkCmdClearDepthStencilImage) X(vkDeviceWaitIdle) X(vkFreeCommandBuffers) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdSetPrimitiveTopology) X(vkCmdSetPrimitiveRestartEnable) X(vkCmdBindVertexBuffers) X(vkCreateDescriptorSetLayout) X(vkCreateDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCmdBindDescriptorSets) X(vkCreateSampler) X(vkDestroySampler) X(vkFreeDescriptorSets) X(vkCmdSetBlendConstants) X(vkCmdSetStencilReference) X(vkCmdSetDepthBias) X(vkCmdFillBuffer) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdCopyImage) X(vkCmdBlitImage) X(vkGetBufferDeviceAddress) X(vkCmdWriteTimestamp) X(vkCreateQueryPool) X(vkCmdResetQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) X(vkCmdCopyQueryPoolResults) X(vkGetQueryPoolResults) X(vkDestroyQueryPool) X(vkResetQueryPool) X(vkCmdDrawIndirect) X(vkCmdDrawIndexedIndirect) X(vkCmdDispatchIndirect) X(vkCmdSetCullMode) X(vkCmdSetFrontFace) X(vkCmdSetDepthTestEnable) X(vkCmdSetDepthWriteEnable) X(vkCmdSetDepthCompareOp) \
+     X(vkDestroyBuffer) X(vkFreeMemory) X(vkDestroyImage) X(vkDestroyImageView) X(vkDestroyFramebuffer) X(vkDestroyCommandPool) \
+-    X(vkCmdSetStencilTestEnable) X(vkCmdSetStencilOp) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask)
++    X(vkCmdSetStencilTestEnable) X(vkCmdSetStencilOp) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) \
++    X(vkCreatePipelineCache) X(vkGetPipelineCacheData) X(vkMergePipelineCaches) X(vkDestroyPipelineCache)
+ static int g_dyn3;
+ static int g_tess;
+ static int g_indep;
+@@ -273,13 +277,116 @@ static VkResult nvmtl_opaque_CreateCommandPool(VkDevice dev, const VkCommandPool
+     if (result == VK_SUCCESS) *out = handle;
+     return result;
+ }
++
++/* ===== LOCAL-FIX (this Hackintosh, RTX 4060 / macOS 15): persistent VkPipelineCache
++ * DO NOT REMOVE, REVERT OR 'SIMPLIFY' when merging upstream NullMoth changes - without it every boot recompiles all NVK shaders and WindowServer sits at ~100% CPU for minutes after login.
++ * History: git log in ~/work/nvidia-setup/src/repo (branch local-mods). Installed + guarded by ~/work/system/nvguard. ===== */
++/* Persistent VkPipelineCache: every NVK shader compile (NIR -> NAK) used to be redone from scratch on every boot, because pipelines were
++ * created with VK_NULL_HANDLE.  WindowServer alone spent most of its first minutes after login in nvk_compile_shaders.  The cache lives next
++ * to the SPIR-V cache, is keyed by the Vulkan driver build (size+mtime), and is merged with what other processes of the same user stored. */
++static VkPipelineCache g_pcache;
++static char g_pcache_path[1024];
++static _Atomic unsigned g_pcache_gen, g_pcache_saved;
++static _Atomic int g_pcache_timer;
++static size_t g_pcache_lastsz;
++#define NVMTL_PCACHE_MAX (512ull << 20)
++
++static void *nvmtl_pcache_read(const char *path, size_t *n)
++{
++    int fd = open(path, O_RDONLY | O_CLOEXEC); if (fd < 0) return NULL;
++    struct stat st; void *buf = NULL;
++    if (fstat(fd, &st) == 0 && st.st_size > 32 && (unsigned long long)st.st_size <= NVMTL_PCACHE_MAX && (buf = malloc((size_t)st.st_size))) {
++        size_t got = 0;
++        while (got < (size_t)st.st_size) { ssize_t r = read(fd, (char *)buf + got, (size_t)st.st_size - got); if (r <= 0) break; got += (size_t)r; }
++        if (got != (size_t)st.st_size) { free(buf); buf = NULL; } else *n = got;
++    }
++    close(fd);
++    return buf;
++}
++
++static void nvmtl_pcache_save_now(void)
++{
++    if (!g_pcache || !g_pcache_path[0]) return;
++    const unsigned gen = atomic_load(&g_pcache_gen);
++    if (gen == atomic_load(&g_pcache_saved)) return;
++    { size_t cur = 0;   /* creating a pipeline that was already in the cache does not grow it - nothing new to persist */
++      if (pvkGetPipelineCacheData(g_dev, g_pcache, &cur, NULL) == VK_SUCCESS && cur == g_pcache_lastsz) { atomic_store(&g_pcache_saved, gen); return; }
++      g_pcache_lastsz = cur; }
++    VkPipelineCache out = g_pcache, tmp = VK_NULL_HANDLE;
++    size_t on = 0; void *old = nvmtl_pcache_read(g_pcache_path, &on);
++    if (old) {
++        VkPipelineCacheCreateInfo ci = { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, NULL, 0, on, old };
++        if (pvkCreatePipelineCache(g_dev, &ci, NULL, &tmp) == VK_SUCCESS) {
++            if (pvkMergePipelineCaches(g_dev, tmp, 1, &g_pcache) == VK_SUCCESS) out = tmp;
++            else { pvkDestroyPipelineCache(g_dev, tmp, NULL); tmp = VK_NULL_HANDLE; }
++        }
++        free(old);
++    }
++    size_t sz = 0;
++    if (pvkGetPipelineCacheData(g_dev, out, &sz, NULL) == VK_SUCCESS && sz > 32 && sz <= NVMTL_PCACHE_MAX) {
++        void *buf = malloc(sz);
++        if (buf && pvkGetPipelineCacheData(g_dev, out, &sz, buf) == VK_SUCCESS) {
++            char tp[1100]; snprintf(tp, sizeof tp, "%s.%d.tmp", g_pcache_path, (int)getpid());
++            int fd = open(tp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
++            if (fd >= 0) {
++                size_t put = 0;
++                while (put < sz) { ssize_t w = write(fd, (char *)buf + put, sz - put); if (w <= 0) break; put += (size_t)w; }
++                close(fd);
++                if (put == sz && rename(tp, g_pcache_path) == 0) { atomic_store(&g_pcache_saved, gen); nvlog("pcache: saved %zu KiB to %s", sz >> 10, g_pcache_path); }
++                else unlink(tp);
++            }
++        }
++        free(buf);
++    }
++    if (tmp) pvkDestroyPipelineCache(g_dev, tmp, NULL);
++}
++
++static void nvmtl_pcache_rearm(void);
++static void nvmtl_pcache_touch(void)
++{
++    atomic_fetch_add(&g_pcache_gen, 1);
++    if (atomic_exchange(&g_pcache_timer, 1)) return;
++    nvmtl_pcache_rearm();
++}
++
++static void nvmtl_pcache_rearm(void)
++{
++    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
++        atomic_store(&g_pcache_timer, 0);
++        nvmtl_pcache_save_now();
++        if (atomic_load(&g_pcache_gen) != atomic_load(&g_pcache_saved) && g_pcache_path[0] && !atomic_exchange(&g_pcache_timer, 1)) nvmtl_pcache_rearm();
++    });
++}
++
++static void nvmtl_pcache_init(void)
++{
++    @autoreleasepool {
++        struct stat vs;
++        if (stat("/Library/GPUBundles/nvmtl/libvulkan_nouveau.dylib", &vs) != 0) return;
++        NSString *d = [[nvmtl_aircache_dir() stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"pcache"];
++        [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
++        snprintf(g_pcache_path, sizeof g_pcache_path, "%s/pc-%llx-%llx.bin", d.fileSystemRepresentation,
++                 (unsigned long long)vs.st_size, (unsigned long long)vs.st_mtimespec.tv_sec);
++    }
++    size_t n = 0; void *data = nvmtl_pcache_read(g_pcache_path, &n);
++    VkPipelineCacheCreateInfo ci = { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, NULL, 0, data ? n : 0, data };
++    VkResult r = pvkCreatePipelineCache(g_dev, &ci, NULL, &g_pcache);
++    if (r != VK_SUCCESS && data) { ci.initialDataSize = 0; ci.pInitialData = NULL; g_pcache = VK_NULL_HANDLE; r = pvkCreatePipelineCache(g_dev, &ci, NULL, &g_pcache); }
++    free(data);
++    if (r != VK_SUCCESS) { g_pcache = VK_NULL_HANDLE; g_pcache_path[0] = 0; nvlog("pcache: vkCreatePipelineCache failed %d - compiling without a persistent cache", r); return; }
++    { size_t cur = 0; if (pvkGetPipelineCacheData(g_dev, g_pcache, &cur, NULL) == VK_SUCCESS) g_pcache_lastsz = cur; }
++    nvlog("pcache: %s (%zu KiB loaded)", g_pcache_path, n >> 10);
++}
++
+ static VkResult nvmtl_opaque_CreateGraphicsPipelines(VkDevice dev, VkPipelineCache cache, uint32_t count, const VkGraphicsPipelineCreateInfo *info, const VkAllocationCallbacks *allocator, void **out)
+ {
+     if (count != 1) return VK_ERROR_INITIALIZATION_FAILED;
+     VkPipeline handle = VK_NULL_HANDLE;
+     VkGraphicsPipelineCreateInfo pinfo;
+     if (g_pstat) { pinfo = *info; pinfo.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR; info = &pinfo; }
++    if (!cache) cache = g_pcache;
+     VkResult result = pvkCreateGraphicsPipelines(dev, cache, count, info, allocator, &handle);
++    if (result == VK_SUCCESS && cache && cache == g_pcache) nvmtl_pcache_touch();
+     if (result == VK_SUCCESS) *out = handle;
+     else if (handle) pvkDestroyPipeline(dev, handle, allocator);
+     return result;
+@@ -317,7 +424,9 @@ static VkResult nvmtl_opaque_CreateComputePipelines(VkDevice dev, VkPipelineCach
+ {
+     if (count != 1) return VK_ERROR_INITIALIZATION_FAILED;
+     VkPipeline handle = VK_NULL_HANDLE;
++    if (!cache) cache = g_pcache;
+     VkResult result = pvkCreateComputePipelines(dev, cache, count, info, allocator, &handle);
++    if (result == VK_SUCCESS && cache && cache == g_pcache) nvmtl_pcache_touch();
+     if (result == VK_SUCCESS) *out = handle;
+     else if (handle) pvkDestroyPipeline(dev, handle, allocator);
+     return result;
+@@ -572,6 +681,7 @@ static int nvmtl_vk_initialize(void)
+     }
+     g_lib = dlopen(NVMTL_ICD_LIB, RTLD_NOW | RTLD_LOCAL);
+     if (g_lib) {
++        nvbf_install(g_lib, NVMTL_ICD_LIB);
+         pvkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(g_lib, "vkGetInstanceProcAddr");
+         if (!pvkGetInstanceProcAddr)
+             pvkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(g_lib, "vk_icdGetInstanceProcAddr");
+@@ -792,6 +902,7 @@ static int nvmtl_vk_initialize(void)
+                                1, &qci, 0, NULL, next, next ? exts : NULL, &enabled };
+     VKCK(pvkCreateDevice(g_pdev, &dci, NULL, &g_dev), "vkCreateDevice");
+     DEVICE_FNS(LOAD_D)
++    nvmtl_pcache_init();
+     if (g_pstat) { p_pstat_props = (PFN_vkGetPipelineExecutablePropertiesKHR)pvkGetDeviceProcAddr(g_dev, "vkGetPipelineExecutablePropertiesKHR");
+                    p_pstat_stats = (PFN_vkGetPipelineExecutableStatisticsKHR)pvkGetDeviceProcAddr(g_dev, "vkGetPipelineExecutableStatisticsKHR");
+                    if (!p_pstat_props || !p_pstat_stats) g_pstat = 0;
+@@ -3548,9 +3659,14 @@ static int nvmtl_vk_pipeline_create_impl_lifetime_body(const void *vs, size_t vn
+     VkShaderModule vmod = VK_NULL_HANDLE, fmod = VK_NULL_HANDLE, tvm = VK_NULL_HANDLE, tcm = VK_NULL_HANDLE;
+     NVMTL_PIPELINE_STAGE(pvkCreateShaderModule(g_dev, &vsm, NULL, &vmod), "vkCreateShaderModule(vertex)");
+     NVMTL_PIPELINE_STAGE(pvkCreateShaderModule(g_dev, &fsm, NULL, &fmod), "vkCreateShaderModule(fragment)");
++    // The fragment shader's get_num_samples() (ANGLE's sample-mask code), translated before any pipeline existed, is
++    // a specialization constant (translator RASTER_SAMPLE_COUNT_SPEC_ID); unused IDs are ignored by Vulkan.
++    const uint32_t fs_samples = samples > 1 ? samples : 1;
++    const VkSpecializationMapEntry fs_me = { 0x4E560001u, 0, 4 };
++    const VkSpecializationInfo fs_si = { 1, &fs_me, 4, &fs_samples };
+     VkPipelineShaderStageCreateInfo stages[4] = {
+         { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, td ? VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT : VK_SHADER_STAGE_VERTEX_BIT, vmod, "main", NULL },
+-        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fmod, "main", NULL } };
++        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fmod, "main", &fs_si } };
+     uint32_t nstages = 2;
+     if (td) {
+         VkShaderModuleCreateInfo tvi = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, tvsd.length, (const uint32_t *)tvsd.bytes };
+@@ -3824,7 +3940,7 @@ static VkPipeline nvmtl_compute_variant(nvk_pipeline *p, const uint32_t l[3])
+         VkComputePipelineCreateInfo cpi = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
+             { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, (VkShaderModule)p->mod, "main", &si },
+             (VkPipelineLayout)p->layout, VK_NULL_HANDLE, -1 };
+-        VkResult r = pvkCreateComputePipelines(g_dev, VK_NULL_HANDLE, 1, &cpi, NULL, &found);
++        VkResult r = pvkCreateComputePipelines(g_dev, g_pcache, 1, &cpi, NULL, &found);
+         if (r != VK_SUCCESS) {
+             if (found) pvkDestroyPipeline(g_dev, found, NULL);
+             nvlog("vk: compute variant %ux%ux%u -> %d — this dispatch is SKIPPED", l[0], l[1], l[2], r); found = VK_NULL_HANDLE;
+@@ -4208,7 +4324,20 @@ int nvmtl_vk_cmd_begin_pass(nvk_cmdbuf *c, const nvk_pass *ps, nvk_pipeline *p)
+     if (!nvmtl_sample_pattern_valid(&pattern) || pattern.count != (p->samples > 1 ? p->samples : 1)) {
+         nvlog("sample positions: count/pattern incompatible with render pipeline"); return -1;
+     }
+-    if (ps->sample_pattern.count && !g_sample_locations) { nvlog("sample positions: backend unavailable"); return -1; }
++    // Apple's GL-on-Metal renderer names sample positions on EVERY multisample pass (Steam/CEF draws through ANGLE on GL),
++    // although the device answers areProgrammableSamplePositionsSupported NO. Refusing the pass dropped all of its draws
++    // (black/missing UI). Without the sample-locations backend the pass now runs on the standard pattern: equal to what GL
++    // asks for (it asks for the standard one), and only antialiasing coverage can differ otherwise.
++    if (ps->sample_pattern.count && !g_sample_locations) {
++        nvmtl_sample_pattern std, want;
++        int zero = 1; for (uint32_t i = 0; i < pattern.count; i++) zero &= pattern.position[i].x == 0 && pattern.position[i].y == 0;
++        const int same = !nvmtl_sample_default(pattern.count, &std) && !nvmtl_sample_pattern_quantize(&pattern, &want) && !memcmp(&std, &want, sizeof std);
++        static int said; if (said++ < 4) { char pos[160] = ""; for (uint32_t i = 0; i < pattern.count && i < 8; i++)
++                snprintf(pos + strlen(pos), sizeof pos - strlen(pos), " (%.4g,%.4g)", pattern.position[i].x, pattern.position[i].y);
++            nvlog("sample positions: no sample-locations backend - %u-sample pass runs on the standard pattern (%s; asked:%s)",
++                  pattern.count, same ? "the pattern asked for" : zero ? "GL's all-zero placeholder" : "the pattern asked for DIFFERS, coverage may differ", pos); }
++        if (nvmtl_sample_default(pattern.count, &pattern)) return -1;
++    }
+     if (nvmtl_sample_pattern_quantize(&pattern, &pattern)) return -1;
+     uint32_t cf[NVMTL_NCOL], rmask, ncol = nvmtl_rt_shape(p, cf, &rmask);
+     for (uint32_t i = 0; i < ncol; i++) {
+@@ -5438,6 +5567,127 @@ int nvmtl_vk_image_write(nvk_queue *q, nvk_image *img, const void *src, size_t r
+     return nvmtl_vk_submit_wait(&c);
+ }
+ 
++// Asynchronous surface-in upload. WindowServer re-uploads every private-image IOSurface whose seed moved (all surfaces below
++// NVMTL_SURF_SHARE_MINPX pixels, and every multi-plane video frame) on its compositing thread. image_write above copies the
++// whole surface into a staging buffer with the CPU and then waits for the GPU; while a page scrolls or a video plays that
++// was ~70% of WindowServer's main thread (spindump 2026-10-09: memmove page faults + vkWaitForFences under nvmtlSurfaceIn).
++// Here the copy is SUBMITTED and not waited for: queue order puts it ahead of every later submission (the command buffer
++// that samples the texture is committed after this call), and the barrier at its end makes the transfer visible to them.
++// `direct` = the surface's own pages imported as a buffer: the GPU reads them itself and the CPU copies nothing.
++// `hold` (released through `rel` once the copy completed) keeps the texture, its image and that import alive; on failure
++// it is NOT consumed. NVMTL_SURFIN_ASYNC=0 (nvrm610.conf) brings back the synchronous upload.
++#define NVMTL_UPL_INFLIGHT 48u
++typedef struct nvmtl_upl { nvk_cmdbuf c; nvmtl_inflight f; nvk_buffer stage; void *hold; void (*rel)(void *); struct nvmtl_upl *next; } nvmtl_upl;
++static pthread_mutex_t g_upl_lock = PTHREAD_MUTEX_INITIALIZER;
++static nvmtl_upl *g_upl_head, *g_upl_tail;
++static unsigned g_upl_n;
++static _Atomic int g_upl_timer;
++static _Atomic unsigned long long g_upl_direct, g_upl_staged, g_upl_bytes, g_upl_blocked, g_upl_fail;
++int nvmtl_vk_surfin_async_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_SURFIN_ASYNC"); on = !(e && e[0] == '0');
++        syslog(LOG_ERR, "NullMoth-diag: surface-in: IOSurface uploads %s (NVMTL_SURFIN_ASYNC=%s)", on ? "are submitted without waiting; repeatedly uploaded surfaces are read by the GPU from their own pages"
++              : "copy on the CPU and wait for the GPU (old)", e ? e : "unset"); }
++    return on;
++}
++static void nvmtl_upl_done(nvmtl_upl *u)
++{
++    const int r = nvmtl_vk_submit_finish(&u->f);
++    if (r == -2) { g_upl_fail++; free(u); return; }   // device lost: keep what the GPU may still touch, like submit_finish does
++    if (u->stage.buf) nvmtl_vk_buffer_destroy(&u->stage);
++    if (u->hold && u->rel) u->rel(u->hold);
++    if (r) g_upl_fail++;
++    free(u);
++}
++// Finish the uploads whose fence signalled; while more than `keep` are in flight, wait for the oldest.
++static void nvmtl_upl_reap(unsigned keep)
++{
++    for (;;) {
++        pthread_mutex_lock(&g_upl_lock);
++        nvmtl_upl *u = g_upl_head;
++        if (!u || (g_state == 1 && g_upl_n <= keep && pvkGetFenceStatus(g_dev, (VkFence)u->f.fence) != VK_SUCCESS)) { pthread_mutex_unlock(&g_upl_lock); return; }
++        const int blocked = g_upl_n > keep;
++        g_upl_head = u->next; if (!g_upl_head) g_upl_tail = NULL; g_upl_n--;
++        pthread_mutex_unlock(&g_upl_lock);
++        if (blocked) g_upl_blocked++;
++        if (g_state != 1) { free(u); continue; }
++        nvmtl_upl_done(u);
++    }
++}
++static void nvmtl_upl_arm(void);
++static void nvmtl_upl_tick(void *ctx)
++{
++    (void)ctx;
++    nvmtl_upl_reap(UINT_MAX);
++    atomic_store(&g_upl_timer, 0);
++    pthread_mutex_lock(&g_upl_lock); const int more = g_upl_head != NULL; pthread_mutex_unlock(&g_upl_lock);
++    if (more) nvmtl_upl_arm();
++}
++// Uploads nobody follows with more work still complete and release their texture: a short timer reaps them.
++static void nvmtl_upl_arm(void)
++{
++    int z = 0;
++    if (atomic_compare_exchange_strong(&g_upl_timer, &z, 1))
++        dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 16 * NSEC_PER_MSEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), NULL, nvmtl_upl_tick);
++}
++int nvmtl_vk_image_write_async(nvk_image *img, const void *src, size_t row_bytes, const nvk_buffer *direct, size_t direct_off,
++                               void *hold, void (*rel)(void *))
++{
++    if (g_state != 1 || !img || !img->img) return -1;
++    const size_t bpp = img->bpp ? img->bpp : 4;
++    const uint32_t bw = img->bw ? img->bw : 1;
++    const uint32_t cols = nvmtl_blocks(img->w, img->bw), rows = nvmtl_blocks(img->h, img->bh);
++    if (row_bytes < (size_t)cols * bpp) { nvlog("image_write_async: bytesPerRow %zu < %u blocks * %zu B", row_bytes, cols, bpp); return -1; }
++    nvmtl_upl_reap(NVMTL_UPL_INFLIGHT);
++    nvmtl_upl *u = calloc(1, sizeof *u); if (!u) return -1;
++    VkBufferImageCopy bic = { 0, 0, 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
++    VkBuffer from; int isdirect = 0;
++    if (direct && direct->buf && src && !(row_bytes % bpp) && !(direct_off % bpp) && !(direct_off & 3)
++        && direct_off + row_bytes * (rows - 1) + (size_t)cols * bpp <= direct->size) {
++        bic.bufferOffset = direct_off; bic.bufferRowLength = (uint32_t)(row_bytes / bpp * bw);
++        from = (VkBuffer)direct->buf; isdirect = 1;
++    } else {
++        if (!src || nvmtl_vk_buffer_create((size_t)cols * rows * bpp, 1, &u->stage) || !u->stage.map) {
++            if (u->stage.buf) nvmtl_vk_buffer_destroy(&u->stage);
++            free(u); return -1; }
++        uint8_t *dst = (uint8_t *)u->stage.map;
++        for (uint32_t y = 0; y < rows; y++)
++            memcpy(dst + (size_t)y * cols * bpp, (const uint8_t *)src + (size_t)y * row_bytes, (size_t)cols * bpp);
++        from = (VkBuffer)u->stage.buf;
++    }
++    if (nvmtl_vk_cmd_begin(NULL, &u->c)) { if (u->stage.buf) nvmtl_vk_buffer_destroy(&u->stage); free(u); return -1; }
++    VkImageSubresourceRange range = { nvmtl_barrier_aspect(img), 0, 1, 0, 1 };
++    // Not waited for any more, so order the overwrite after whatever earlier submissions still do with the image.
++    VkImageMemoryBarrier toDst = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++        VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
++    pvkCmdPipelineBarrier(u->c.cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
++    pvkCmdCopyBufferToImage(u->c.cb, from, (VkImage)img->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
++    VkImageMemoryBarrier toRead = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL,
++        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
++        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
++    pvkCmdPipelineBarrier(u->c.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &toRead);
++    img->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++    u->hold = hold; u->rel = rel;
++    const int r = nvmtl_vk_submit_begin(&u->c, &u->f);
++    if (r) { g_upl_fail++; if (r != -2 && u->stage.buf) nvmtl_vk_buffer_destroy(&u->stage); free(u); return -1; }
++    pthread_mutex_lock(&g_upl_lock);
++    if (g_upl_tail) g_upl_tail->next = u; else g_upl_head = u;
++    g_upl_tail = u; const unsigned inflight = ++g_upl_n;
++    pthread_mutex_unlock(&g_upl_lock);
++    const unsigned long long k = (isdirect ? g_upl_direct++ : g_upl_staged++) + 1, all = g_upl_direct + g_upl_staged;
++    g_upl_bytes += (size_t)cols * rows * bpp;
++    if (all == 1 || !(all & 0xFFF))
++        syslog(LOG_ERR, "NullMoth-diag: surface-in census: %llu async uploads (%llu read by the GPU from the surface's pages, %llu staged by the CPU), %llu MB, "
++              "%llu waited for the in-flight cap of %u, %llu failed; %u in flight now (this one %s, #%llu)",
++              all, (unsigned long long)g_upl_direct, (unsigned long long)g_upl_staged, (unsigned long long)(g_upl_bytes >> 20),
++              (unsigned long long)g_upl_blocked, NVMTL_UPL_INFLIGHT, (unsigned long long)g_upl_fail, inflight, isdirect ? "direct" : "staged", k);
++    nvmtl_upl_arm();
++    return 0;
++}
++
+ int nvmtl_vk_copy_buffer(nvk_queue *q, nvk_buffer *src, size_t srcOff, nvk_buffer *dst, size_t dstOff, size_t size)
+ {
+     const uint64_t t0 = nvmtl_perf_now();
+@@ -5510,6 +5760,102 @@ int nvmtl_vk_cmd_prepare_sampled_image(nvk_cmdbuf *c, nvk_image *img, int storag
+     return 0;
+ }
+ 
++// A shared-VRAM (linear alias) surface that a render pass draws into can also be bound as a sampled texture inside the
++// same pass - WindowServer's layer-cache update does exactly that (the defocus redraw binds the cache as FTEX[0] and
++// draws quads onto itself). Sampling the colour attachment is a same-subpass feedback loop: the sampler descriptor
++// claims SHADER_READ_ONLY_OPTIMAL while the image is the attachment, and what the shader reads is undefined - on this
++// driver it comes back stale or black (the missing corners / black blocks at the defocus moment). Private tiled images
++// happen to read back correctly through the existing paths, so the fix copies the attachment into a private shadow and
++// redirects the bind there; the copy runs between end_render and the pass restart, never inside a pass.
++int nvmtl_vk_selfshadow_create(const nvk_image *att, nvk_image *out)
++{
++    if (!att || !att->img || !att->w || !att->h) return -1;
++    return nvmtl_vk_image_create_typed(att->w, att->h, att->fmt, att->bpp, 0, 1, 0, 2, 1, out);
++}
++
++int nvmtl_vk_cmd_selfsnapshot(nvk_cmdbuf *c, nvk_image *att, nvk_image *shadow)
++{
++    return nvmtl_vk_cmd_selfsnapshot_rects(c, att, shadow, NULL, 0);
++}
++// Same copy restricted to rects (x, y, w, h in attachment pixels, clamped by the caller, non-overlapping); n == 0 copies
++// the whole image. The shadow keeps what earlier snapshots put there (its layout moves from SHADER_READ_ONLY, never from
++// UNDEFINED), so copying only what was drawn since the last snapshot gives the same shadow as a whole-image copy.
++int nvmtl_vk_cmd_selfsnapshot_rects(nvk_cmdbuf *c, nvk_image *att, nvk_image *shadow, const uint32_t (*rects)[4], unsigned n)
++{
++    if (!c || !att || !shadow || !shadow->img || c->in_rp || n > 16) return -1;
++    if (att->w != shadow->w || att->h != shadow->h || att->fmt != shadow->fmt) return -1;
++    const VkImageLayout back = (VkImageLayout)att->layout;
++    img_to(c, att, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
++           VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
++    img_to(c, shadow, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
++           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
++    VkImageCopy r[16]; unsigned nr = 0;
++    for (unsigned i = 0; i < (n ? n : 1u); i++) {
++        const uint32_t x = n ? rects[i][0] : 0, y = n ? rects[i][1] : 0, w = n ? rects[i][2] : att->w, h = n ? rects[i][3] : att->h;
++        if (!w || !h || x >= att->w || y >= att->h || w > att->w - x || h > att->h - y) continue;
++        r[nr++] = (VkImageCopy){ { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { (int32_t)x, (int32_t)y, 0 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++                                 { (int32_t)x, (int32_t)y, 0 }, { w, h, 1 } };
++    }
++    if (nr) pvkCmdCopyImage(c->cb, (VkImage)att->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, (VkImage)shadow->img,
++                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, nr, r);
++    img_to(c, shadow, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
++           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
++    img_to(c, att, back, VK_ACCESS_TRANSFER_READ_BIT,
++           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
++           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
++    return 0;
++}
++
++// Tiled render shadow of a shared-VRAM (linear) surface. Ada draws into pitch-linear images several times slower than
++// into its own tiled layout (Chrome's window composite: ~1 ms per Graphite pass on a 3038x1802 linear target, ten
++// passes a frame, ~13 ms; the same frame on a private tiled target ~1.6 ms), so a render encoder draws such a surface
++// into a private tiled image of the same size instead and the two are copied VRAM to VRAM around the encoder:
++// linear -> shadow before the first pass (unless the attachment is cleared), shadow -> linear at endEncoding.
++// Both copies are whole-image and carry full ALL_COMMANDS barriers (no layout-equality shortcut like img_to's: the
++// copy must also order against earlier passes and copies of the same images). Leaves both in TRANSFER_SRC_OPTIMAL,
++// the layout this file keeps colour attachments in between passes.
++int nvmtl_vk_rsh_on(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("NVMTL_TILED_RT"); const char *pn = getprogname();
++        const int ws = pn && !strcmp(pn, "WindowServer");
++        on = e && *e ? atoi(e) : 1;               // 0 off, 1 apps (not WindowServer), 2 every process
++        if (on == 1 && ws) on = 0;
++        syslog(LOG_ERR, "NullMoth-diag: tiled render shadow for shared-VRAM render targets %s in %s (NVMTL_TILED_RT=%s)",
++               on ? "ON" : "off", pn ? pn : "?", e ? e : "unset");
++    }
++    return on;
++}
++int nvmtl_vk_rsh_create(const nvk_image *lin, nvk_image *out)
++{
++    if (!lin || !lin->img || !lin->w || !lin->h || lin->samples > 1) return -1;
++    return nvmtl_vk_image_create_typed(lin->w, lin->h, lin->fmt, lin->bpp, 0, 1, 0, 2, 1, out);
++}
++int nvmtl_vk_cmd_rsh_copy(nvk_cmdbuf *c, nvk_image *from, nvk_image *to)
++{
++    if (!c || !from || !to || !from->img || !to->img || c->in_rp) return -1;
++    if (from->w != to->w || from->h != to->h || from->fmt != to->fmt) return -1;
++    const VkImageSubresourceRange r = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
++    VkImageMemoryBarrier pre[2] = {
++        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
++          (VkImageLayout)from->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)from->img, r },
++        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
++          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)to->img, r } };
++    pvkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2, pre);
++    from->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++    VkImageCopy ic = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { to->w, to->h, 1 } };
++    pvkCmdCopyImage(c->cb, (VkImage)from->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, (VkImage)to->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
++    VkImageMemoryBarrier post[2] = {
++        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)to->img, r },
++        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)from->img, r } };
++    pvkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 2, post);
++    to->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++    return 0;
++}
++
+ int nvmtl_vk_image_write_region_level(nvk_queue *q, nvk_image *img, const void *src, size_t row_bytes,
+                                       uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t level)
+ { return nvmtl_vk_image_write_region_level_layer(q, img, src, row_bytes, x, y, w, h, level, 0); }
+@@ -5947,7 +6293,7 @@ static int nvmtl_visibility_sum_init(void)
+         VkComputePipelineCreateInfo pi = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
+                                           stage, layout, VK_NULL_HANDLE, -1 };
+         VkPipeline pipeline = VK_NULL_HANDLE;
+-        if (pvkCreateComputePipelines(g_dev, VK_NULL_HANDLE, 1, &pi, NULL, &pipeline) == VK_SUCCESS) {
++        if (pvkCreateComputePipelines(g_dev, g_pcache, 1, &pi, NULL, &pipeline) == VK_SUCCESS) {
+             g_visibility_sum_layout = layout; g_visibility_sum_pipeline = pipeline; rc = 0;
+         } else {
+             if (pipeline) pvkDestroyPipeline(g_dev, pipeline, NULL);
+diff --git a/plugin/nvmtl_vk.h b/plugin/nvmtl_vk.h
+index 10a84e2..54e5afa 100644
+--- a/plugin/nvmtl_vk.h
++++ b/plugin/nvmtl_vk.h
+@@ -191,6 +191,9 @@ extern void (*nvmtl_pre_release_hook)(void *);
+ extern void (*nvmtl_pre_submit_hook)(void);
+ int  nvmtl_vk_image_read(nvk_queue *q, nvk_image *img, void *dst, size_t row_bytes);
+ int  nvmtl_vk_image_write(nvk_queue *q, nvk_image *img, const void *src, size_t row_bytes);
++int  nvmtl_vk_image_write_async(nvk_image *img, const void *src, size_t row_bytes, const nvk_buffer *direct, size_t direct_off,
++                                void *hold, void (*rel)(void *));
++int  nvmtl_vk_surfin_async_on(void);
+ int  nvmtl_vk_copy_buffer(nvk_queue *q, nvk_buffer *src, size_t srcOff, nvk_buffer *dst, size_t dstOff, size_t size);
+ int  nvmtl_vk_image_create_mips(uint32_t w, uint32_t h, int bgra, uint32_t mips, nvk_image *out);
+ int  nvmtl_vk_image_create_ex(uint32_t w, uint32_t h, uint32_t vkfmt, uint32_t bpp, int a8, uint32_t mips, nvk_image *out);
+@@ -229,6 +232,15 @@ int  nvmtl_vk_pipeline_create_rt(const void *vs, size_t vn, const void *fs, size
+ int  nvmtl_vk_cmd_begin_pass(nvk_cmdbuf *c, const nvk_pass *ps, nvk_pipeline *p);
+ int  nvmtl_vk_cmd_empty_pass(nvk_cmdbuf *c, const nvk_pass *ps);
+ int  nvmtl_vk_pass_kind(const nvk_pass *ps);
++// Same-pass feedback-loop guard: a private tiled copy of a shared-VRAM attachment, refreshed by nvmtl_vk_cmd_selfsnapshot
++// when the pass binds the surface it renders into (the caller ends and restarts the render pass around the copy).
++int  nvmtl_vk_selfshadow_create(const nvk_image *att, nvk_image *out);
++int  nvmtl_vk_cmd_selfsnapshot(nvk_cmdbuf *c, nvk_image *att, nvk_image *shadow);
++int  nvmtl_vk_cmd_selfsnapshot_rects(nvk_cmdbuf *c, nvk_image *att, nvk_image *shadow, const uint32_t (*rects)[4], unsigned n);
++// Tiled render shadow of a shared-VRAM render target (see nvmtl_vk.c)
++int  nvmtl_vk_rsh_on(void);
++int  nvmtl_vk_rsh_create(const nvk_image *lin, nvk_image *out);
++int  nvmtl_vk_cmd_rsh_copy(nvk_cmdbuf *c, nvk_image *from, nvk_image *to);
+ void nvmtl_vk_cmd_set_stencil(nvk_cmdbuf *c, int enable, const uint32_t *front6, const uint32_t *back6);
+ int  nvmtl_vk_cmd_retire_view(nvk_cmdbuf *c, void *view);
+ int  nvmtl_vk_cmd_attachment_view(nvk_cmdbuf *c, nvk_image *img, int depth, uint32_t level, uint32_t slice, void **out, uint32_t *w, uint32_t *h);
