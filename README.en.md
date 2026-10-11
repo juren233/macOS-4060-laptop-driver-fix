@@ -7,12 +7,35 @@ A collection of patches, byte-patch scripts and root-cause write-ups for running
 and an RTX 4060 Laptop dGPU** (Clevo chassis, i7-13620H, BOE 0B40 2560×1440@165 Hz panel, Intel AX211, ELAN0420 I²C touchpad).
 
 **Not included:** any NullMoth/NVIDIA binary or firmware, your EFI / `config.plist`, ACPI dumps. Get the driver from upstream.
-What *is* included: source diffs against upstream v1.9.0, assertion-based binary patch scripts, kext/Lilu sources, install/rollback
+What *is* included: source diffs against upstream v1.9.0 and v1.13.0, assertion-based binary patch scripts, kext/Lilu sources, install/rollback
 scripts, regression test programs, and the analysis behind each fix.
 
 > ⚠️ This modifies kernel extensions, system GPU plugins, OpenCore config and ACPI. Back up your EFI and keep a bootable fallback.
 > Provided as is, no warranty. Machine-specific values (ESP device/UUID, panel IDs, binary hashes/offsets) must be adapted — scripts that
 > touch the ESP refuse to run unless `ESP_DEV` and `ESP_UUID` are exported. See [docs/applying.md](docs/applying.md) (Chinese).
+
+## Versions and applicability
+
+**Tested combination:** NullMoth **v1.9.0** kexts and binaries + this repo's patches; for the plugin and translator you can use either the v1.9.0 or the v1.13.0 patch set (the author runs the latter).
+
+| Layer | Which version | Notes |
+|---|---|---|
+| Plugin NVMTLDriver, translator | `patches/nullmoth-1.13.0/` (recommended) or `patches/nullmoth-1.9.0/0001`, `0002` | Pick one set, do not stack. The 1.13.0 set drops what upstream absorbed |
+| Kexts NVRM/NVAccel/NVRMFB | **1.9.0** baseline (`patches/nullmoth-1.9.0/0003–0005`) | NVRM core source is unchanged 1.9.0→1.13.0, but binary-patch offsets must still be checked against your own package |
+| NVK / NVDEC / NVENC byte patches | Against 1.9.0 binaries | Scripts assert the expected bytes and refuse to write on mismatch |
+
+**Pick fixes for your machine** (numbers refer to the table below):
+
+| Your situation | Applicable fixes |
+|---|---|
+| Any NullMoth-supported NVIDIA GPU on macOS 15 (user space, hardware independent) | 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 16, 20 |
+| Needs a specific NullMoth build (byte patches / offsets are version bound) | 2, 5 (NVK part), 14, 15 |
+| Ada (RTX 40) only: NVDEC/NVENC t2d layout | 14, 15 |
+| Depends on your panel and mainboard | 1 (HiDPI: panel ID, refresh rate), 17 (brightness: `_DSM`/`_DOD` paths in your DSDT) |
+| Same hardware only | 18 (Intel AX211), 19 (ELAN0420 I²C touchpad) |
+| Kext, preventive, higher risk | 21 (cursor-only commits) |
+
+Suggested order: user-space first (plugin, translator) and live with it; then byte patches as needed; kexts last. Do not copy the machine-specific items (1, 17, 18, 19) blindly.
 
 ## Fixes
 
@@ -38,6 +61,7 @@ scripts, regression test programs, and the analysis behind each fix.
 | 18 | Wi-Fi / Bluetooth (AX211) | No Sequoia AirportItlwm; bluetoothd LE quirks | AirportItlwm-Sequoia, BTLEFix (Lilu) |
 | 19 | Touchpad dead | VoodooI2C missing ADL-P PCI ID; VoodooGPIO TigerLakeLP class not built / wrong start chain | 3 patches + PS2 key SSDT |
 | 20 | CrossOver/Wine killed by `EXC_GUARD` | `amfi_get_out_of_my_way` makes every process "platform" → immovable task port | boot-arg `ipc_control_port_options=0` |
+| 21 | Rare flash of a stale frame on mouse movement (preventive, not reproduced locally) | NVRMFB cursor commits re-submitted the primary surface, racing the zero-copy flip | Cursor-only commits (ported from upstream 1.13.0) |
 
 Details (Chinese): [docs/fixes.md](docs/fixes.md) · Pitfalls: [docs/pitfalls.md](docs/pitfalls.md).
 
