@@ -1,6 +1,7 @@
 # 踩坑记录（请先读）
 
 ## 会让你丢掉桌面/崩溃的
+- **放进 `/Library/GPUBundles` 的每个 dylib / 插件都必须至少 ad-hoc 签名（`codesign -f -s -`）**。cargo / clang 直接产出的翻译器没有签名：普通用户进程照样能 `dlopen`（你的测试会通过），但 WindowServer（平台进程，带库验证）会拒绝加载 → “AIR->SPIR-V translator is not loaded” → 建不出 Metal 管线 → `MetalShader::CopyPipelineState` 空指针崩溃循环 + 用户态看门狗 panic，开机停在 verbose 画面。内核日志里是 `Library Validation failed: Rejecting …libnvmtl_translate.dylib … completely unsigned`。复现办法：用 `codesign -f -s - -o library` 签名的测试程序跑（`hidpi/tests/lv-test.sh`）。救援：安全模式（`-x`）进系统，把上一版文件放回去（作者的 `nvguard/install.sh previous`），`nvram boot-args` 里被去掉的显卡参数要补回来。**所有“已验证”的结论都要说明测试进程是否带库验证。**
 - **别原地覆盖已加载的 dylib / 插件**。同一 inode 的 `cp` 会让内核缓存的代码签名失效，随后所有 dlopen 它的进程（WindowServer、视频编解码 XPC、通知中心……）被 `SIGKILL "Code Signature Invalid"`。只能写新 inode 再 `mv`，或重启。
 - **NVRM 对快速的 GPU 客户端创建/销毁很脆弱**。作者在同时开 4–6 个 Chrome 实例并反复 `pkill` 时触发过一次内核 panic（`_kdispNotifyEvent_IMPL` ← `_kheadHandleRgSemIntr` ISR 中 `_serverShareIterNext` 空指针）。做 GPU 测试一次只开一个实例，让它自己退出。
 - **Lilu 插件里别 hook 所有 USB I/O，也别在完成回调里读传输缓冲区**（`IOGMD: not wired for the IODMACommand` panic，进了安全模式才恢复）。

@@ -69,6 +69,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 22 | Memoji / SceneKit 角色网格碎裂 | SceneKit 蒙皮 kernel 用 compute `stage_in`，插件没实现，属性读不到 | 插件里用 MSL gather kernel 实现 compute stage_in（8/16/32 位格式、BGRA、常量步长） | `patches/nullmoth-1.13.0/per-fix/compute-stage-in.patch` |
 | 23 | Photo Booth 预览纯黑（拍照正常）；compute / Core Image 往 CAMetalLayer 画不上 | `framebufferOnly=NO` 的 drawable 用途是 `Unknown(0)`，Apple 驱动当“全部用途”，插件当“没有”→ ShaderWrite 被拒 | 把 0 读作 ShaderRead、ShaderWrite、RenderTarget（`NVMTL_UNKNOWN_USAGE=0` 关闭） | `patches/nullmoth-1.13.0/per-fix/unknown-usage-all.patch`、`hidpi/catest/drawable-writes.swift` |
 | 24 | 内置麦克风 / 扬声器不出现 | 没装 AppleALC；声卡是 ALC256（子系统 `1558:25E1`） | AppleALC + `alcid=11`，脚本改 ESP 的 `config.plist` | `audio/` |
+| 25 | Claude 桌面端终端面板没有文字（xterm.js WebGL）；`sampler2D u[N]` 数组的 WebGL 页面画不出 | **翻译器**不支持采样器数组、纹理数组只保住元素 0；**插件**描述符槽位掩码只标数组的第一个槽位 | 翻译器把数组降级为描述符数组并解析元素指针；插件按数组长度标全部槽位。⚠ 放进 GPUBundles 的 dylib 必须 ad-hoc 签名，否则 WindowServer 库验证拒绝 → 崩溃循环 | `patches/nullmoth-1.13.0/per-fix/sampler-array-{plugin,translator}.patch`、`hidpi/catest/sarray.m`、`hidpi/tests/lv-test.sh` |
 
 每一项的详细分析、验证方法和注意事项见 **[docs/fixes.md](docs/fixes.md)**。
 

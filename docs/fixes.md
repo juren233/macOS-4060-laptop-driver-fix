@@ -123,6 +123,17 @@
 - 修复：`callers_before_pointer_helpers()` 稳定拓扑重排（仅当有指针形参的 helper 排在其调用者之前时才重排）。
 - 验证：6787 个可翻译缓存着色器新旧对比，仅 5 个变化（全是 CI Lanczos），另 25 个只是 ID 重编号。
 
+### 25. WebGL 多纹理单元（`sampler2D u[N]`）：Claude 桌面端终端文字不显示
+- 现象：Claude 桌面端右侧 Terminal 面板只有一个空心光标框，没有任何文字；加 `--disable-gpu` 才正常。任何用 WebGL2、且着色器里有 `uniform sampler2D tex[N]` 数组并按整数下标选用的页面都一样（xterm.js 的 WebGL 字形图集：`MAX_TEXTURE_IMAGE_UNITS`=16，`flat in int v_texpage` + if 链）。
+- 根因（两处，缺一不可）：ANGLE-Metal 把它发射成两个 `ptr byval([16 x ptr])` 入口参数（纹理在 addrspace 1，采样器在 addrspace 2），再装进局部结构体 `thread T *texture` / `thread sampler *sampler` 指针里。
+  1. **翻译器**：没有采样器数组的降级，`declared_descriptor_counts` 直接拒绝（回退，着色器创建失败）；纹理数组也只保住元素 0——`&param[k]` 的 access chain 在被 consumer 引用前就被当作死代码清掉，元素 0 的 store 不留 sidecar 事实，发射器还会折叠末尾全 0 的 GEP 下标。
+  2. **插件**：每个 Metal 槽位一个 layout binding（`descriptorCount=1`），`nvmtl_spirv_bmask` 只按 `Binding` 装饰标记第一个槽位，元素 1…N-1 读到的是占位描述符（普通的 `array<texture2d<float>, N>` 动态下标也一样读不到第 1 个及之后的元素）。
+- 修复：翻译器新增 `ParamBinding::SamplerArray`（`OpTypeArray<OpTypeSampler,N>` 的 UniformConstant 变量，沿用采样器 binding），`Ctx::sampler_array_vars/array_element_ptrs` 记录元素指针，`texture_array.rs` 同时解析采样调用的纹理（操作数 1）和采样器（操作数 2）句柄，并沿 `CopyObject` 链和结构体字段的 load/store 找回元素；
+  插件让 `nvmtl_spirv_bmask` 顺着变量→指针→`OpTypeArray`→长度常量，把 `count` 个连续槽位都标上（`per-fix/sampler-array-translator.patch`、`per-fix/sampler-array-plugin.patch`，已包含在 `0001/0002` 里）。
+- 测试：`hidpi/catest/sarray.m`（ANGLE 同款：16 页，每页必须取到自己的纹理**和**采样器，偶数页 nearest、奇数页 linear；旧栈 FAIL，新栈 PASS）；`catest/slib.m` 对系统 `SkyLightShaders.air64.metallib` 的每个着色器建管线，新旧一致；翻译缓存里约 4400 个着色器新旧对比输出逐字节相同，只有 xterm 那个以前翻译失败的现在能翻译。
+- ⚠ **这个修复第一次安装时让桌面崩溃循环**：cargo 直接编出来的 `libnvmtl_translate.dylib` **没有代码签名**。普通用户进程照样 `dlopen`（所以上面的测试都通过），但 WindowServer 是平台进程、带库验证，拒绝加载 → “AIR->SPIR-V translator is not loaded” → 管线状态为空 → `MetalShader::CopyPipelineState` 空指针崩溃，随后用户态看门狗 panic，开机停在 verbose 画面。**放进 `/Library/GPUBundles` 的每个 dylib/插件都必须先 `codesign -f -s -`（插件加 `-i com.nullmoth.NVMTLDriver`），并用 `hidpi/tests/lv-test.sh`（`codesign -o library` 的测试程序）复现 WindowServer 的加载条件再安装**；详见 [pitfalls.md](pitfalls.md)。
+- 回滚：`sudo zsh nvguard/install.sh previous`（把上一版重新登记为“好的构建”，守护进程随即把旧文件放回去，安全模式里也能用）。
+
 ---
 
 ## 四、Chrome / Electron 的 GPU 合成
