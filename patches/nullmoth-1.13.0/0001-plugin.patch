@@ -2221,7 +2221,7 @@ index 0000000..dfa1ef5
 +    "!54 = !{!\"llvm.loop.mustprogress\"}\n"
 +    "\n";
 diff --git a/plugin/nvmtl_vk.c b/plugin/nvmtl_vk.c
-index 380bab4..30e1e5c 100644
+index 380bab4..b1cd2b9 100644
 --- a/plugin/nvmtl_vk.c
 +++ b/plugin/nvmtl_vk.c
 @@ -15,6 +15,7 @@
@@ -2398,7 +2398,58 @@ index 380bab4..30e1e5c 100644
      if (g_pstat) { p_pstat_props = (PFN_vkGetPipelineExecutablePropertiesKHR)pvkGetDeviceProcAddr(g_dev, "vkGetPipelineExecutablePropertiesKHR");
                     p_pstat_stats = (PFN_vkGetPipelineExecutableStatisticsKHR)pvkGetDeviceProcAddr(g_dev, "vkGetPipelineExecutableStatisticsKHR");
                     if (!p_pstat_props || !p_pstat_stats) g_pstat = 0;
-@@ -3548,9 +3659,14 @@ static int nvmtl_vk_pipeline_create_impl_lifetime_body(const void *vs, size_t vn
+@@ -1834,17 +1945,46 @@ static int nvmtl_spirv_bmask(const void *p, size_t n, uint64_t out[4])
+     const uint32_t *w = (const uint32_t *)p; size_t nw = n / 4;
+     memset(out, 0, 4 * sizeof *out);
+     if (!p || nw < 5 || w[0] != 0x07230203u) return 0;
++    /* A descriptor ARRAY (`sampler2D u_texture[16]`, array<texture2d<float>, 16>) occupies `count` consecutive slots, but its
++       Binding decoration names only the first one: follow variable -> pointer -> array -> length constant so every element's slot
++       gets written. Without this only element 0 ever reached the shader and the others read the dummy descriptor. */
++    const uint32_t bound = w[3];
++    uint32_t *info = (bound && bound <= (1u << 22)) ? (uint32_t *)calloc((size_t)bound * 4, sizeof(uint32_t)) : NULL;
++    enum { VAR_TYPE = 0, PTR_POINTEE = 1, ARR_LEN = 2, CONST_VAL = 3 };
++#define NVMTL_BM_INFO(kind, id) info[(size_t)(id) * 4 + (kind)]
++    if (info) {
++        for (size_t i = 5; i < nw; ) {
++            uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
++            if (!wc || i + wc > nw) { free(info); return 0; }
++            if (op == 59 && wc >= 4 && w[i + 2] < bound) NVMTL_BM_INFO(VAR_TYPE, w[i + 2]) = w[i + 1];
++            else if (op == 32 && wc == 4 && w[i + 1] < bound) NVMTL_BM_INFO(PTR_POINTEE, w[i + 1]) = w[i + 3];
++            else if (op == 28 && wc == 4 && w[i + 1] < bound) NVMTL_BM_INFO(ARR_LEN, w[i + 1]) = w[i + 3];
++            else if (op == 43 && wc >= 4 && w[i + 2] < bound) NVMTL_BM_INFO(CONST_VAL, w[i + 2]) = w[i + 3];
++            i += wc;
++        }
++    }
+     for (size_t i = 5; i < nw; ) {
+         uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
+-        if (!wc || i + wc > nw) return 0;
++        if (!wc || i + wc > nw) { free(info); return 0; }
+         if (op == 71 && wc == 4 && w[i + 2] == 33) {
+-            uint32_t b = w[i + 3];
++            uint32_t b = w[i + 3], count = 1;
++            if (info && w[i + 1] < bound) {
++                uint32_t vt = NVMTL_BM_INFO(VAR_TYPE, w[i + 1]);
++                uint32_t pt = vt < bound ? NVMTL_BM_INFO(PTR_POINTEE, vt) : 0;
++                uint32_t len = pt && pt < bound ? NVMTL_BM_INFO(ARR_LEN, pt) : 0;
++                if (len && len < bound) count = NVMTL_BM_INFO(CONST_VAL, len);
++                if (count < 1 || count > NVMTL_NTEX) count = 1;
++            }
+             if (b == NVMTL_ADDRESS_BINDING_NUMBER) out[NVMTL_ADDRESS_BINDING >> 6] |= 1ull << (NVMTL_ADDRESS_BINDING & 63);
+-            else if (b < NVMTL_ADDRESS_BINDING) out[b >> 6] |= 1ull << (b & 63);
+-            else if (!(b >= NVMTL_STEX_BINDING_NUMBER && b < NVMTL_STEX_BINDING_NUMBER + NVMTL_NSTEX)) return 0;
++            else if (b < NVMTL_ADDRESS_BINDING) {
++                for (uint32_t k = 0; k < count && b + k < NVMTL_ADDRESS_BINDING; k++) out[(b + k) >> 6] |= 1ull << ((b + k) & 63);
++            }
++            else if (!(b >= NVMTL_STEX_BINDING_NUMBER && b < NVMTL_STEX_BINDING_NUMBER + NVMTL_NSTEX)) { free(info); return 0; }
+         }
+         i += wc;
+     }
++#undef NVMTL_BM_INFO
++    free(info);
+     return 1;
+ }
+ enum { NVMTL_SLOT_NONE = 0, NVMTL_SLOT_BUF, NVMTL_SLOT_TEX, NVMTL_SLOT_SAMP, NVMTL_SLOT_TEXBUF  };
+@@ -3548,9 +3688,14 @@ static int nvmtl_vk_pipeline_create_impl_lifetime_body(const void *vs, size_t vn
      VkShaderModule vmod = VK_NULL_HANDLE, fmod = VK_NULL_HANDLE, tvm = VK_NULL_HANDLE, tcm = VK_NULL_HANDLE;
      NVMTL_PIPELINE_STAGE(pvkCreateShaderModule(g_dev, &vsm, NULL, &vmod), "vkCreateShaderModule(vertex)");
      NVMTL_PIPELINE_STAGE(pvkCreateShaderModule(g_dev, &fsm, NULL, &fmod), "vkCreateShaderModule(fragment)");
@@ -2414,7 +2465,7 @@ index 380bab4..30e1e5c 100644
      uint32_t nstages = 2;
      if (td) {
          VkShaderModuleCreateInfo tvi = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, tvsd.length, (const uint32_t *)tvsd.bytes };
-@@ -3824,7 +3940,7 @@ static VkPipeline nvmtl_compute_variant(nvk_pipeline *p, const uint32_t l[3])
+@@ -3824,7 +3969,7 @@ static VkPipeline nvmtl_compute_variant(nvk_pipeline *p, const uint32_t l[3])
          VkComputePipelineCreateInfo cpi = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
              { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, (VkShaderModule)p->mod, "main", &si },
              (VkPipelineLayout)p->layout, VK_NULL_HANDLE, -1 };
@@ -2423,7 +2474,7 @@ index 380bab4..30e1e5c 100644
          if (r != VK_SUCCESS) {
              if (found) pvkDestroyPipeline(g_dev, found, NULL);
              nvlog("vk: compute variant %ux%ux%u -> %d — this dispatch is SKIPPED", l[0], l[1], l[2], r); found = VK_NULL_HANDLE;
-@@ -4208,7 +4324,20 @@ int nvmtl_vk_cmd_begin_pass(nvk_cmdbuf *c, const nvk_pass *ps, nvk_pipeline *p)
+@@ -4208,7 +4353,20 @@ int nvmtl_vk_cmd_begin_pass(nvk_cmdbuf *c, const nvk_pass *ps, nvk_pipeline *p)
      if (!nvmtl_sample_pattern_valid(&pattern) || pattern.count != (p->samples > 1 ? p->samples : 1)) {
          nvlog("sample positions: count/pattern incompatible with render pipeline"); return -1;
      }
@@ -2445,7 +2496,7 @@ index 380bab4..30e1e5c 100644
      if (nvmtl_sample_pattern_quantize(&pattern, &pattern)) return -1;
      uint32_t cf[NVMTL_NCOL], rmask, ncol = nvmtl_rt_shape(p, cf, &rmask);
      for (uint32_t i = 0; i < ncol; i++) {
-@@ -5438,6 +5567,127 @@ int nvmtl_vk_image_write(nvk_queue *q, nvk_image *img, const void *src, size_t r
+@@ -5438,6 +5596,127 @@ int nvmtl_vk_image_write(nvk_queue *q, nvk_image *img, const void *src, size_t r
      return nvmtl_vk_submit_wait(&c);
  }
  
@@ -2573,7 +2624,7 @@ index 380bab4..30e1e5c 100644
  int nvmtl_vk_copy_buffer(nvk_queue *q, nvk_buffer *src, size_t srcOff, nvk_buffer *dst, size_t dstOff, size_t size)
  {
      const uint64_t t0 = nvmtl_perf_now();
-@@ -5510,6 +5760,102 @@ int nvmtl_vk_cmd_prepare_sampled_image(nvk_cmdbuf *c, nvk_image *img, int storag
+@@ -5510,6 +5789,102 @@ int nvmtl_vk_cmd_prepare_sampled_image(nvk_cmdbuf *c, nvk_image *img, int storag
      return 0;
  }
  
@@ -2676,7 +2727,7 @@ index 380bab4..30e1e5c 100644
  int nvmtl_vk_image_write_region_level(nvk_queue *q, nvk_image *img, const void *src, size_t row_bytes,
                                        uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t level)
  { return nvmtl_vk_image_write_region_level_layer(q, img, src, row_bytes, x, y, w, h, level, 0); }
-@@ -5947,7 +6293,7 @@ static int nvmtl_visibility_sum_init(void)
+@@ -5947,7 +6322,7 @@ static int nvmtl_visibility_sum_init(void)
          VkComputePipelineCreateInfo pi = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
                                            stage, layout, VK_NULL_HANDLE, -1 };
          VkPipeline pipeline = VK_NULL_HANDLE;

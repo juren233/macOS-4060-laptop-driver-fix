@@ -1,0 +1,418 @@
+diff --git a/translator/translator/src/passes/mod.rs b/translator/translator/src/passes/mod.rs
+index 95b41dd..44ad194 100644
+--- a/translator/translator/src/passes/mod.rs
++++ b/translator/translator/src/passes/mod.rs
+@@ -299,6 +299,8 @@ struct Ctx {
+     image_multisampled: HashSet<Word>,
+     image_storage: HashSet<Word>,
+     image_array_vars: HashMap<Word, (Word, (Dim, bool), ImageComp, bool)>,
++    sampler_array_vars: HashSet<Word>,
++    array_element_ptrs: HashMap<Word, (Word, Word)>,
+     bindless_heap_vars: HashMap<Word, Word>,
+     address_table: Option<(Word, Word, Option<Word>)>,
+     bound_buffer_vars: HashSet<Word>,
+@@ -386,6 +388,8 @@ impl Ctx {
+             image_multisampled: HashSet::new(),
+             image_storage: HashSet::new(),
+             image_array_vars: HashMap::new(),
++            sampler_array_vars: HashSet::new(),
++            array_element_ptrs: HashMap::new(),
+             bindless_heap_vars: HashMap::new(),
+             address_table: None,
+             bound_buffer_vars: HashSet::new(),
+diff --git a/translator/translator/src/passes/resources/collapse.rs b/translator/translator/src/passes/resources/collapse.rs
+index abeba18..3beaa61 100644
+--- a/translator/translator/src/passes/resources/collapse.rs
++++ b/translator/translator/src/passes/resources/collapse.rs
+@@ -795,6 +795,18 @@ pub(in crate::passes) fn apply_bindings(
+                 if let Some((metal_index, state)) = runtime_specialization {
+                     ctx.register_runtime_storage_image_value(var, metal_index, Some(state));
+                 }
++                record_array_element_pointers(ctx, entry_idx, pid, var);
++                remove_dead_local_image_array_memcpy(ctx, entry_idx, pid);
++                resource_values.insert(var);
++                splices.push((pid, var));
++            }
++            ParamBinding::SamplerArray { var, elem_ty } => {
++                // Samplers share the image-array machinery: the element is picked out of the
++                // descriptor array exactly like a texture handle, only its type differs.
++                ctx.image_array_vars
++                    .insert(var, (elem_ty, (Dim::Dim2D, false), ImageComp::Float, false));
++                ctx.sampler_array_vars.insert(var);
++                record_array_element_pointers(ctx, entry_idx, pid, var);
+                 remove_dead_local_image_array_memcpy(ctx, entry_idx, pid);
+                 resource_values.insert(var);
+                 splices.push((pid, var));
+@@ -1061,6 +1073,31 @@ pub(in crate::passes) fn apply_bindings(
+     Ok(())
+ }
+ 
++/// Remember which element of a descriptor array each `&param[k]` chain addresses, before the
++/// chains are retired as dead: the element pointers only reach their consumers through memory
++/// (ANGLE keeps `thread T *texture` in a local struct), where the sidecar facts name them by id.
++fn record_array_element_pointers(ctx: &mut Ctx, entry_idx: usize, param: Word, var: Word) {
++    let mut found = Vec::new();
++    for block in &ctx.module.functions[entry_idx].blocks {
++        for instruction in &block.instructions {
++            if !matches!(
++                instruction.class.opcode,
++                Op::AccessChain | Op::InBoundsAccessChain
++            ) {
++                continue;
++            }
++            if let (Some(result), [Operand::IdRef(base), Operand::IdRef(index)]) =
++                (instruction.result_id, instruction.operands.as_slice())
++            {
++                if *base == param {
++                    found.push((result, (var, *index)));
++                }
++            }
++        }
++    }
++    ctx.array_element_ptrs.extend(found);
++}
++
+ fn remove_dead_local_image_array_memcpy(ctx: &mut Ctx, entry_idx: usize, param: Word) {
+     let memcpy_ids = ctx
+         .module
+diff --git a/translator/translator/src/passes/resources/texture_array.rs b/translator/translator/src/passes/resources/texture_array.rs
+index 95a5ffa..8027372 100644
+--- a/translator/translator/src/passes/resources/texture_array.rs
++++ b/translator/translator/src/passes/resources/texture_array.rs
+@@ -59,6 +59,37 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             alias = *source;
+         }
+     }
++    // A handle reached through a pointer to an array element, e.g. ANGLE's `thread T *texture`
++    // in its texture-environment struct: the load of the element's value has the element pointer
++    // as its root and no further field.
++    let stored_arrays = stored_array_pointer_fields(ctx, entry_idx);
++    for fact in ctx.emit_sidecar.local_pointer_field_loads.clone() {
++        if fixed_handles.contains_key(&fact.id)
++            || ctx.image_array_vars.contains_key(&fact.root)
++            || !(fact.indices.is_empty() || fact.indices.as_slice() == [0])
++        {
++            continue;
++        }
++        if let Some(resolved) = resolve_array_element(ctx, &defs, fact.root) {
++            fixed_handles.insert(fact.id, resolved);
++            continue;
++        }
++        // The pointer to element 0 is the array parameter itself, which is stored into the
++        // struct as a plain pointer and so leaves no store fact behind: look it up by field key.
++        let outer = ctx
++            .emit_sidecar
++            .local_pointer_field_loads
++            .iter()
++            .find(|outer| outer.id == fact.root)
++            .map(|outer| (outer.root, trim_zero_indices(&outer.indices)));
++        if let Some((arrayvar, element)) = outer.and_then(|key| stored_arrays.get(&key).copied()) {
++            let element = match element {
++                Some(element) => element,
++                None => ctx.const_uint(0),
++            };
++            fixed_handles.insert(fact.id, (arrayvar, element));
++        }
++    }
+     let mut local_table_handles = HashMap::new();
+     for fact in &ctx.emit_sidecar.local_pointer_dynamic_field_loads {
+         let resolved = local_table_array_elements(ctx, &defs, fact, &fixed_handles);
+@@ -124,9 +155,35 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             if !is_texture_intrinsic(name) {
+                 continue;
+             }
+-            let Some(Operand::IdRef(handle)) = inst.operands.get(1) else {
++            // Operand 1 is the texture handle; operand 2 is the sampler handle of a sample/gather call.
++            for pos in [1usize, 2] {
++            let Some(Operand::IdRef(handle)) = inst.operands.get(pos) else {
+                 continue;
+             };
++            {
++                let mut probe = *handle;
++                for _ in 0..8 {
++                    let Some(source) = defs
++                        .get(&probe)
++                        .filter(|def| def.class.opcode == Op::CopyObject)
++                        .and_then(|def| match def.operands.first() {
++                            Some(Operand::IdRef(source)) => Some(*source),
++                            _ => None,
++                        })
++                    else {
++                        break;
++                    };
++                    probe = source;
++                    if let Some(resolved) = fixed_handles.get(&probe).copied() {
++                        fixed_handles.entry(*handle).or_insert(resolved);
++                        break;
++                    }
++                    if let Some(resolved) = dynamic_handles.get(&probe).copied() {
++                        dynamic_handles.entry(*handle).or_insert(resolved);
++                        break;
++                    }
++                }
++            }
+             if let Some(&slot) = device_texture_slots.get(handle) {
+                 device_candidates.push((*handle, slot, name.to_string()));
+                 seen.insert(*handle);
+@@ -161,6 +218,7 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+                 continue;
+             };
+             candidates.push((*handle, *ptr));
++            }
+         }
+     }
+     for (handle, ptr) in candidates {
+@@ -261,6 +319,7 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+         }
+         let &(elem_image_ty, dim, comp, multisampled) =
+             ctx.image_array_vars.get(&arrayvar).unwrap();
++        let is_sampler = ctx.sampler_array_vars.contains(&arrayvar);
+         let ptr_image = ctx.ty_ptr(StorageClass::UniformConstant, elem_image_ty);
+         let p = ctx.module.fresh_id();
+         new_access_chains.insert(
+@@ -273,12 +332,14 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             ),
+         );
+         retyped_load_ptr.insert(handle, (elem_image_ty, p));
+-        ctx.image_dims.insert(handle, dim);
+-        ctx.image_comp.insert(handle, comp);
+-        if multisampled {
+-            ctx.image_multisampled.insert(handle);
++        if !is_sampler {
++            ctx.image_dims.insert(handle, dim);
++            ctx.image_comp.insert(handle, comp);
++            if multisampled {
++                ctx.image_multisampled.insert(handle);
++            }
+         }
+-        if image_type_is_storage(ctx, elem_image_ty) {
++        if !is_sampler && image_type_is_storage(ctx, elem_image_ty) {
+             ctx.image_storage.insert(handle);
+             if let Some((metal_index, state)) =
+                 ctx.runtime_storage_image_values.get(&arrayvar).copied()
+@@ -296,7 +357,7 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+     }
+     dead_roots.extend(handle_order.iter().map(|handle| handles[handle].0));
+ 
+-    let mut placeholder_uses: HashMap<(usize, usize), (Instruction, Instruction, Word)> =
++    let mut placeholder_uses: HashMap<(usize, usize), Vec<(usize, Instruction, Instruction, Word)>> =
+         HashMap::new();
+     let mut placeholder_specs = Vec::new();
+     for (block_idx, block) in ctx.module.functions[entry_idx].blocks.iter().enumerate() {
+@@ -304,20 +365,23 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             if inst.class.opcode != Op::FunctionCall {
+                 continue;
+             }
+-            let Some(Operand::IdRef(handle)) = inst.operands.get(1) else {
+-                continue;
+-            };
+-            let Some(&(arrayvar, idx)) = handles.get(handle) else {
+-                continue;
+-            };
+-            if defs.contains_key(handle) {
+-                continue;
++            for pos in [1usize, 2] {
++                let Some(Operand::IdRef(handle)) = inst.operands.get(pos) else {
++                    continue;
++                };
++                let Some(&(arrayvar, idx)) = handles.get(handle) else {
++                    continue;
++                };
++                if defs.contains_key(handle) {
++                    continue;
++                }
++                placeholder_specs.push((block_idx, inst_idx, pos, arrayvar, idx));
+             }
+-            placeholder_specs.push((block_idx, inst_idx, arrayvar, idx));
+         }
+     }
+-    for (block_idx, inst_idx, arrayvar, idx) in placeholder_specs {
++    for (block_idx, inst_idx, pos, arrayvar, idx) in placeholder_specs {
+         let &(image_ty, dim, comp, multisampled) = ctx.image_array_vars.get(&arrayvar).unwrap();
++        let is_sampler = ctx.sampler_array_vars.contains(&arrayvar);
+         let ptr_image = ctx.ty_ptr(StorageClass::UniformConstant, image_ty);
+         let pointer = ctx.module.fresh_id();
+         let image = ctx.module.fresh_id();
+@@ -333,20 +397,25 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             Some(image),
+             vec![Operand::IdRef(pointer)],
+         );
+-        ctx.image_dims.insert(image, dim);
+-        ctx.image_comp.insert(image, comp);
+-        if multisampled {
+-            ctx.image_multisampled.insert(image);
+-        }
+-        if image_type_is_storage(ctx, image_ty) {
+-            ctx.image_storage.insert(image);
+-            if let Some((metal_index, state)) =
+-                ctx.runtime_storage_image_values.get(&arrayvar).copied()
+-            {
+-                ctx.register_runtime_storage_image_value(image, metal_index, Some(state));
++        if !is_sampler {
++            ctx.image_dims.insert(image, dim);
++            ctx.image_comp.insert(image, comp);
++            if multisampled {
++                ctx.image_multisampled.insert(image);
++            }
++            if image_type_is_storage(ctx, image_ty) {
++                ctx.image_storage.insert(image);
++                if let Some((metal_index, state)) =
++                    ctx.runtime_storage_image_values.get(&arrayvar).copied()
++                {
++                    ctx.register_runtime_storage_image_value(image, metal_index, Some(state));
++                }
+             }
+         }
+-        placeholder_uses.insert((block_idx, inst_idx), (chain, load, image));
++        placeholder_uses
++            .entry((block_idx, inst_idx))
++            .or_default()
++            .push((pos, chain, load, image));
+     }
+ 
+     let func = &mut ctx.module.functions[entry_idx];
+@@ -354,11 +423,13 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+         let mut rebuilt: Vec<Instruction> =
+             Vec::with_capacity(blk.instructions.len() + handles.len());
+         for (inst_idx, inst) in blk.instructions.clone().into_iter().enumerate() {
+-            if let Some((chain, load, image)) = placeholder_uses.remove(&(block_idx, inst_idx)) {
+-                rebuilt.push(chain);
+-                rebuilt.push(load);
++            if let Some(uses) = placeholder_uses.remove(&(block_idx, inst_idx)) {
+                 let mut call = inst;
+-                call.operands[1] = Operand::IdRef(image);
++                for (pos, chain, load, image) in uses {
++                    rebuilt.push(chain);
++                    rebuilt.push(load);
++                    call.operands[pos] = Operand::IdRef(image);
++                }
+                 rebuilt.push(call);
+                 continue;
+             }
+@@ -492,6 +563,55 @@ pub(crate) fn sink_loop_header_texture_array_loads(ctx: &mut Ctx, entry_idx: usi
+     }
+ }
+ 
++/// Trailing zero indices address the same bytes as their prefix, and the emitter folds such
++/// all-zero GEPs away, so the store of element 0 and the load of its first field differ only there.
++fn trim_zero_indices(indices: &[u32]) -> Vec<u32> {
++    let end = indices.iter().rposition(|&index| index != 0).map_or(0, |at| at + 1);
++    indices[..end].to_vec()
++}
++
++/// Local struct fields that hold a pointer into a descriptor array (the array itself, i.e. element 0,
++/// or `&array[k]`), keyed like the sidecar's pointer-field facts. The element is `None` for element 0.
++/// Those stores leave no sidecar fact when the stored pointer needs no placeholder, or when the
++/// store's address is the struct pointer itself rather than a GEP to its first field.
++fn stored_array_pointer_fields(
++    ctx: &Ctx,
++    entry_idx: usize,
++) -> HashMap<(Word, Vec<u32>), (Word, Option<Word>)> {
++    use crate::passes::access::local_pointer_field_access_key;
++    let mut access_keys = HashMap::new();
++    let mut stored = HashMap::new();
++    for block in &ctx.module.functions[entry_idx].blocks {
++        for inst in &block.instructions {
++            if let Some((result, key)) = local_pointer_field_access_key(ctx, &access_keys, inst) {
++                access_keys.insert(result, key);
++            }
++            if inst.class.opcode != Op::Store {
++                continue;
++            }
++            let (Some(Operand::IdRef(ptr)), Some(Operand::IdRef(value))) =
++                (inst.operands.first(), inst.operands.get(1))
++            else {
++                continue;
++            };
++            let Some(key) = access_keys.get(ptr) else {
++                continue;
++            };
++            let target = if ctx.image_array_vars.contains_key(value) {
++                Some((*value, None))
++            } else {
++                ctx.array_element_ptrs
++                    .get(value)
++                    .map(|&(arrayvar, element)| (arrayvar, Some(element)))
++            };
++            if let Some(target) = target {
++                stored.insert((key.root, trim_zero_indices(&key.indices)), target);
++            }
++        }
++    }
++    stored
++}
++
+ fn is_texture_intrinsic(name: &str) -> bool {
+     name.starts_with("air.sample_texture")
+         || name.starts_with("air.sample_depth")
+@@ -662,6 +782,9 @@ fn resolve_array_element(
+         let zero = ctx.const_uint(0);
+         return Some((ptr, zero));
+     }
++    if let Some(&resolved) = ctx.array_element_ptrs.get(&ptr) {
++        return Some(resolved);
++    }
+     let inst = defs.get(&ptr)?;
+     match inst.class.opcode {
+         Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain => {
+diff --git a/translator/translator/src/passes/stage_input/mod.rs b/translator/translator/src/passes/stage_input/mod.rs
+index 86a51da..8c43be0 100644
+--- a/translator/translator/src/passes/stage_input/mod.rs
++++ b/translator/translator/src/passes/stage_input/mod.rs
+@@ -220,6 +220,7 @@ pub(in crate::passes) enum ParamBinding {
+         var: Word,
+         specialized_state: Option<StaticSamplerState>,
+     },
++    SamplerArray { var: Word, elem_ty: Word },
+     Buffer { var: Word, wrap: BufWrap },
+     StageInput {
+         var: Word,
+@@ -265,11 +266,8 @@ fn declared_descriptor_counts(
+             ),
+         };
+         if is_sampler {
+-            return Err(format!(
+-                "entry parameter {idx} is an array of {count} samplers, which this translator has \
+-                 no descriptor-array lowering for; emitting the module would sample with a \
+-                 synthesized default sampler instead of the one the shader selected"
+-            ));
++            // A sampler array is lowered to a descriptor array (ParamBinding::SamplerArray).
++            continue;
+         }
+         let texture_type_name = match stage {
+             Stage::Fragment => frag.and_then(|m| m.texture_type_name(idx)),
+@@ -862,6 +860,34 @@ pub(super) fn build_stage_input(
+                     param_ty: *pty,
+                 },
+             ));
++        } else if role_is("sampler")
++            && match stage {
++                Stage::Fragment => frag.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Vertex => vert.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Kernel => kern.and_then(|m| m.declared_descriptor_count(idx)),
++            }
++            .is_some_and(|count| count > 1)
++        {
++            let count = match stage {
++                Stage::Fragment => frag.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Vertex => vert.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Kernel => kern.and_then(|m| m.declared_descriptor_count(idx)),
++            }
++            .ok_or("sampler array has no declared descriptor count")?;
++            let elem_ty = ctx.ty_sampler();
++            let array_ty = ctx.ty_array(elem_ty, count);
++            let pptr = ctx.ty_ptr(StorageClass::UniformConstant, array_ty);
++            let var = ctx.module.fresh_id();
++            ctx.new_globals.push(Instruction::new(
++                Op::Variable,
++                Some(pptr),
++                Some(var),
++                vec![Operand::StorageClass(StorageClass::UniformConstant)],
++            ));
++            let binding = required_resource_binding(*pid, resource_binding)?;
++            decorate_binding(&mut ctx.module, var, descriptor_layout.set, binding);
++            ctx.interface_buffer_var(var);
++            bindings.push((*pid, ParamBinding::SamplerArray { var, elem_ty }));
+         } else if role_is("sampler") {
+             let sty = ctx.ty_sampler();
+             let pptr = ctx.ty_ptr(StorageClass::UniformConstant, sty);
