@@ -58,7 +58,7 @@ Suggested order: user-space first (plugin, translator) and live with it; then by
 | 15 | UU Remote host: stuck / garbled / slow | NVENC NotSync flag, bw8/bw16 vs t2d layout, slow BAR zeroing, no rate control | H.264 binary patches |
 | 16 | UU Remote as controller crashes | Viewport depth outside [0,1] → NVK assert | Clamp znear/zfar |
 | 17 | No brightness slider / Fn keys / battery | `_DSM`/`_DOD` stubbed in NVRM; EC0 hidden by OC SSDT | NVDSM (Lilu) + NVRMFB built-in panel + enable real EC0 |
-| 18 | Wi-Fi / Bluetooth (AX211) | No Sequoia AirportItlwm; bluetoothd LE quirks | AirportItlwm-Sequoia, BTLEFix (Lilu) |
+| 18 | Wi-Fi / Bluetooth (AX211) | No Sequoia AirportItlwm; bluetoothd LE quirks; some boots Wi-Fi never came up (firmware ALIVE delayed by IO80211 parking ioctls in the shared gate, no retry) | AirportItlwm-Sequoia + init-recovery patch (15 s ALIVE budget, 3 attempts, watchdog re-init — `patches/itlwm/`), BTLEFix (Lilu) |
 | 19 | Touchpad dead | VoodooI2C missing ADL-P PCI ID; VoodooGPIO TigerLakeLP class not built / wrong start chain | 3 patches + PS2 key SSDT |
 | 20 | CrossOver/Wine killed by `EXC_GUARD` | `amfi_get_out_of_my_way` makes every process "platform" → immovable task port | boot-arg `ipc_control_port_options=0` |
 | 21 | Rare flash of a stale frame on mouse movement (preventive, not reproduced locally) | NVRMFB cursor commits re-submitted the primary surface, racing the zero-copy flip | Cursor-only commits (ported from upstream 1.13.0) |

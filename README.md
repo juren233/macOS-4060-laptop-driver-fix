@@ -62,7 +62,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 15 | UU 远程被控端卡在“传输画面中”/ 花屏 / 慢 | NVENC：NotSync 标志、bw8/bw16 与 t2d 布局不符、清零 29 MB 显存走 BAR、无码率控制 | H.264 二进制补丁（t2d 循环、NotSync、AVX 清零、逐帧 QP 码控） | `codec-vulkan/nvenc/` |
 | 16 | UU 作为控制端首帧闪退 | viewport 深度范围越界传给 NVK 触发 `assert(0<=zmin<=1)` | 夹紧 znear/zfar | `per-fix/viewport-depth-clamp.patch` |
 | 17 | 亮度滑块 / Fn 亮度键 / 电池都没有 | NullMoth NVRM 把 `nv_acpi_dsm_method` / `_dod_method` 等桩掉，GSP 认不出面板 | `NVDSM`（Lilu 插件）补上 `_DSM`/`_DOD`/NVKMS 背光；`NVRMFB` 把面板标为内置并出 `AppleBacklightDisplay`；重新启用真 EC0 | `backlight/`、`patches/…/0004` |
-| 18 | 原生 Wi-Fi / 蓝牙 | 无 Sequoia 版 AirportItlwm；macOS 的 bluetoothd 对 AX211 发 LE 命令出错、`Connect` 要点三次 | AirportItlwm-Sequoia + `itlwm_he=1`；`BTLEFix`（Lilu）补丁 bluetoothd 并注入 Random Address / Inquiry Cancel | `wifibt/` |
+| 18 | 原生 Wi-Fi / 蓝牙 | 无 Sequoia 版 AirportItlwm；macOS 的 bluetoothd 对 AX211 发 LE 命令出错、`Connect` 要点三次 | AirportItlwm-Sequoia + `itlwm_he=1`，并打补丁修开机偶发不联网（固件 ALIVE 预算 15 s、3 次尝试、watchdog 自动重新初始化）；`BTLEFix`（Lilu）补丁 bluetoothd 并注入 Random Address / Inquiry Cancel | `wifibt/`、`patches/itlwm/` |
 | 19 | 触控板整个不动 | ELAN0420 在 I²C 上；VoodooI2C 发行版缺 `51e8` PCI ID，VoodooGPIO 的 TigerLakeLP 类未编译且 `start` 链错 | 三处修改 + `SSDT-PS2KEYS`（Fn+F1 宏、PrtSc） | `trackpad/`、`patches/voodoo/` |
 | 20 | CrossOver/Wine 创建容器被 `EXC_GUARD` 杀 | `amfi_get_out_of_my_way` 使所有进程变“平台二进制”，task port 变不可移动 | boot-arg `ipc_control_port_options=0` | [docs/fixes.md](docs/fixes.md) |
 | 21 | 光标移动时偶发闪回旧画面（预防性，本机未复现） | NVRMFB 光标提交顺带重提交主画面，与零拷贝翻转竞争 | 光标提交只带光标（移植上游 1.13.0） | `patches/…/0005` |
@@ -79,6 +79,7 @@ patches/nullmoth-1.9.0/   对上游 v1.9.0 的累计补丁（plugin / translator
 patches/nullmoth-1.13.0/  重新整理到上游 v1.13.0 之上的插件 / 翻译器补丁（内核扩展仍以 1.9.0 为基线）
   per-fix/                逐项修复的独立 diff（便于阅读，各自以当时的基线生成，不保证按序可叠加）
 patches/voodoo/           VoodooGPIO 补丁
+patches/itlwm/            laobamac/itlwm（AirportItlwm）开机初始化自愈补丁
 kexts/                    NVRM 二进制补丁脚本（head-scaler + 启动即翻转）、1.9.0 内核扩展安装/回滚
 hidpi/                    HiDPI 显示覆盖、插件/翻译器热替换脚本、测试程序源码（catest/）、诊断小工具
   legacy-1.0.10/          基于 NullMoth 1.0.10 的旧安装脚本（已被 1.9.0 路线取代，仅供参考）
@@ -89,7 +90,7 @@ trackpad/                 VoodooI2C + PS2 按键映射
 audio/                    内置声卡（AppleALC + alcid）安装/回滚脚本
 nvguard/                  “驱动被重装后自动把补丁放回去”的 LaunchDaemon（参考实现）
 efiguard/                 “ESP 上的修复被丢了就自动补回”的 LaunchDaemon（可在 ESP 副本上演练）
-tools/                    备份、NVRM 运行时旋钮
+tools/                    备份、NVRM 运行时旋钮、开机 Wi-Fi 日志抓取（wifi-bootlog）
 docs/                     详细文档
 ```
 

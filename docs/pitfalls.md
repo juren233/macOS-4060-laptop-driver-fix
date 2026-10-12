@@ -13,7 +13,8 @@
 ## 调试习惯
 - 窗口截图正确 ≠ 物理屏幕正确（出现过“窗口捕获正常、屏幕全黑”）。
 - 在 zsh 里 `log` 是内建，要用 `/usr/bin/log`。
-- `plutil -p … | grep -q` 在 `pipefail` 下会因 SIGPIPE 误判失败。
+- `plutil -p … | grep -q`、`strings … | grep -q` 在 `pipefail` 下会因 SIGPIPE 误判失败；直接 `grep -a -q 模式 文件`。
+- itlwm 的 Release 构建日志很多，128 KB 内核消息缓冲只够约 50 s；查开机问题用 `sysctl -w kern.msgbuf=1048576` 并尽早 dmesg（`tools/wifi-bootlog/`）。
 - PlistBuddy 一次 `-c` 超过约 13 个会中止。
 - PlistBuddy 一次调用里连续多个 `-c` 往数组末尾 `Add dict` 再 `Add` 字段，新元素会变成上一个元素的副本（"Entry Already Exists"）；每条命令单独调用。
 - zsh 终端标签页不接受非 ASCII 路径；用 ASCII 符号链接。

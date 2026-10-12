@@ -187,6 +187,12 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - ⚠ BTLEFix v2 曾因为在 `IOUSBHostPipe::io` 的**完成回调**里读传输缓冲区导致 `IOGMD: not wired for the IODMACommand` panic。教训：永远不要在完成回调里碰 USB 传输的描述符，也不要 hook 所有 USB I/O；v3 起只 hook `idVendor 0x8087` 的 `deviceRequest`。
 - `-btlefixoff` boot-arg 可停用 BTLEFix。
 
+- **开机偶发一直“未连接”（在上面原生 Wi-Fi 基础上的稳定性修复）**：
+  - 不是运行中掉线，而是有的开机 `en2` 从没起来（`ifconfig en2` 有 `UP` 没 `RUNNING`），手动开关 Wi-Fi 才好。
+  - 根因：驱动未就绪（`isDriverAvailable=0`）时 IO80211Family 把外部 `SIOCGA80211` ioctl 挂在**共享的 work loop gate 里** 4–9 s，固件 ALIVE 中断要同一个 gate，冷加载被拖到 5–11 s；而 ALIVE 预算只有 1000 ms、只重试 1 次。失败后 `IFF_UP` 被清、`DriverAvailable=0`，但 `power_state` 仍为 1，airportd 不会再上电，于是一直卡着。
+  - 修复（`patches/itlwm/0001-AirportItlwm-init-recovery.patch`，基于 laobamac/itlwm `d695c97`）：ALIVE 预算 15 s（成功即返回）、3 次初始化尝试、在原有 1 Hz watchdog 里“上电但没 RUNNING 就经 command gate 重新 `enable()`”（3 s 起、退避到 60 s，永不放弃；`IFF_UP` 挂 30 s 没 RUNNING 则先 `disable()`）。保留 Wi-Fi 6（`itlwm_he=1`）。
+  - 安装：自己编译 kext → `wifibt/replace-airportitlwm.sh`（备份 + 读回校验 + `undo`）。细节、编译命令、排查过程见 [wifibt/initrec/README.md](../wifibt/initrec/README.md)；开机日志抓取工具 `tools/wifi-bootlog/`。上游同类问题 laobamac/itlwm#19。
+
 ### 19. 触控板（ELAN0420 / I²C）
 - ELAN 的 PS/2 侧（ETD0467）能应答 identify 所以 VoodooPS2Trackpad 会挂上，但永远没有数据包；真设备是 `\_SB.PC00.I2C0.TPD0`（I²C HID）。
 - VoodooI2C 2.9.1 发行版三处问题：
