@@ -4,7 +4,7 @@
 
 在 **黑苹果（OpenCore）+ macOS 15.8.1 + RTX 4060 笔记本独显直连** 上，把 [NullMoth NVIDIA 驱动](https://github.com/nullmoth/nvidia-macos-driver)
 （v1.9.0）用起来的一整套补丁、脚本和排错记录：HiDPI、WindowServer 花屏/黑块/卡顿、Chrome/Steam/Electron 渲染错误、
-远程控制与视频编解码、屏幕亮度、Wi-Fi/蓝牙、触控板等。
+远程控制与视频编解码、屏幕亮度、Wi-Fi/蓝牙、触控板、内置声卡等。
 
 > **这是什么 / 不是什么**
 > - 是：对上游驱动**源码**的补丁（diff）、对已安装二进制的**字节补丁脚本**、内核扩展的小补丁、安装/回滚/守护脚本，以及每个问题的根因分析。
@@ -32,11 +32,11 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 
 | 你的情况 | 适用的修复 |
 |---|---|
-| 任何 NullMoth 支持的 NVIDIA 卡 + macOS 15（用户态，与机型无关） | 3、4、6、7、8、9、10、11、12、13、16、20 |
+| 任何 NullMoth 支持的 NVIDIA 卡 + macOS 15（用户态，与机型无关） | 3、4、6、7、8、9、10、11、12、13、16、20、22、23 |
 | 需要特定 NullMoth 版本的二进制（字节补丁/偏移量绑定版本） | 2、5（NVK 部分）、14、15 |
 | 仅 Ada（RTX 40 系）：NVDEC/NVENC 的 t2d 布局 | 14、15 |
 | 取决于你的面板和主板 | 1（HiDPI：面板 ID、刷新率）、17（亮度：DSDT 里的 `_DSM`/`_DOD` 路径） |
-| 仅限同款硬件 | 18（Intel AX211）、19（ELAN0420 I²C 触控板） |
+| 仅限同款硬件 | 18（Intel AX211）、19（ELAN0420 I²C 触控板）、24（ALC256 声卡，layout 因机型而异） |
 | 内核扩展，预防性、风险较高 | 21（光标独立提交） |
 
 建议顺序：先装用户态（插件、翻译器）并稳定使用；再按需做字节补丁；最后才碰内核扩展。机型相关的几项（1、17、18、19）要先对照自己的硬件，**不要整套照抄**。
@@ -66,6 +66,9 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 19 | 触控板整个不动 | ELAN0420 在 I²C 上；VoodooI2C 发行版缺 `51e8` PCI ID，VoodooGPIO 的 TigerLakeLP 类未编译且 `start` 链错 | 三处修改 + `SSDT-PS2KEYS`（Fn+F1 宏、PrtSc） | `trackpad/`、`patches/voodoo/` |
 | 20 | CrossOver/Wine 创建容器被 `EXC_GUARD` 杀 | `amfi_get_out_of_my_way` 使所有进程变“平台二进制”，task port 变不可移动 | boot-arg `ipc_control_port_options=0` | [docs/fixes.md](docs/fixes.md) |
 | 21 | 光标移动时偶发闪回旧画面（预防性，本机未复现） | NVRMFB 光标提交顺带重提交主画面，与零拷贝翻转竞争 | 光标提交只带光标（移植上游 1.13.0） | `patches/…/0005` |
+| 22 | Memoji / SceneKit 角色网格碎裂 | SceneKit 蒙皮 kernel 用 compute `stage_in`，插件没实现，属性读不到 | 插件里用 MSL gather kernel 实现 compute stage_in（8/16/32 位格式、BGRA、常量步长） | `patches/nullmoth-1.13.0/per-fix/compute-stage-in.patch` |
+| 23 | Photo Booth 预览纯黑（拍照正常）；compute / Core Image 往 CAMetalLayer 画不上 | `framebufferOnly=NO` 的 drawable 用途是 `Unknown(0)`，Apple 驱动当“全部用途”，插件当“没有”→ ShaderWrite 被拒 | 把 0 读作 ShaderRead、ShaderWrite、RenderTarget（`NVMTL_UNKNOWN_USAGE=0` 关闭） | `patches/nullmoth-1.13.0/per-fix/unknown-usage-all.patch`、`hidpi/catest/drawable-writes.swift` |
+| 24 | 内置麦克风 / 扬声器不出现 | 没装 AppleALC；声卡是 ALC256（子系统 `1558:25E1`） | AppleALC + `alcid=11`，脚本改 ESP 的 `config.plist` | `audio/` |
 
 每一项的详细分析、验证方法和注意事项见 **[docs/fixes.md](docs/fixes.md)**。
 
@@ -83,7 +86,9 @@ codec-vulkan/             NVDEC / NVENC / libvulkan_nouveau 的二进制补丁�
 backlight/                NVDSM（Lilu 插件）、亮度/EC/ACPI 脚本、救援脚本
 wifibt/                   AirportItlwm / BTLEFix / BT 产品名注入 / OpenCore boot-arg 脚本
 trackpad/                 VoodooI2C + PS2 按键映射
+audio/                    内置声卡（AppleALC + alcid）安装/回滚脚本
 nvguard/                  “驱动被重装后自动把补丁放回去”的 LaunchDaemon（参考实现）
+efiguard/                 “ESP 上的修复被丢了就自动补回”的 LaunchDaemon（可在 ESP 副本上演练）
 tools/                    备份、NVRM 运行时旋钮
 docs/                     详细文档
 ```

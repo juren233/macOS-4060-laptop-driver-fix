@@ -15,6 +15,7 @@
 - 在 zsh 里 `log` 是内建，要用 `/usr/bin/log`。
 - `plutil -p … | grep -q` 在 `pipefail` 下会因 SIGPIPE 误判失败。
 - PlistBuddy 一次 `-c` 超过约 13 个会中止。
+- PlistBuddy 一次调用里连续多个 `-c` 往数组末尾 `Add dict` 再 `Add` 字段，新元素会变成上一个元素的副本（"Entry Already Exists"）；每条命令单独调用。
 - zsh 终端标签页不接受非 ASCII 路径；用 ASCII 符号链接。
 - 沙箱里的 WindowServer 只能写 `/private/tmp`、`/private/var/tmp`、`TMPDIR`，诊断日志放这里。
 - `dtrace -p WindowServer` 被 SIP 挡，用 `spindump WindowServer 10`；内核符号用 `nm /System/Library/Kernels/kernel`（基址 `0xffffff8000200000`）。
@@ -23,5 +24,5 @@
 
 ## 机器/版本相关
 - 本仓库所有二进制补丁都绑定 **NullMoth 1.9.0 / 1.0.10** 的具体构建，升级后偏移会变；脚本会断言，报错就是该重新推导而不是硬改。
-- macOS 更新可能破坏 kext / 插件；EFI、NVRAM（`boot-args`、`csr-active-config`）不在 nvguard 守护范围。
+- macOS 更新可能破坏 kext / 插件；ESP 上的修复由 `efiguard/` 守护（见 docs/fixes.md 第十节），NVRAM 里的 `csr-active-config` 不在任何守护范围（`nvguard/verify.sh` 会提示）。
 - Homebrew 7.x 起不再支持 Intel macOS（官方安装脚本在 x86_64 直接退出，也没有 bottle）：手动 `git clone Homebrew/brew` 到 `/usr/local/Homebrew` 并链接 `/usr/local/bin/brew`，之后一切源码编译。

@@ -84,6 +84,23 @@
   libstreamer 的 Metal 视频视图设置的 viewport 深度范围越出 [0,1]，插件原样传给 `vkCmdSetViewport`，NVK 在 `nvk_emit_viewport` 里 `assert(0<=zmin<=1)`。
 - 修复：在 `nvmtl_vk_cmd_set_viewport` 夹紧 znear/zfar（`viewport-depth-clamp.patch`）。
 
+### 22. Memoji / SceneKit 角色网格碎裂（compute `stage_in`）
+- 现象：Memoji、SceneKit 骨骼蒙皮的角色网格被“炸开”成碎片。
+- 根因：SceneKit 的蒙皮 kernel 用 Metal 的 `MTLStageInputOutputDescriptor`（compute 阶段的 `[[stage_in]]`：kernel 按属性描述从顶点缓冲取输入）。
+  插件没有实现这一功能，kernel 读到的是未绑定的属性。
+- 修复：插件实现 compute stage_in——用一个由 MSL 编译出的 gather kernel（`plugin/si_gather.metal`）在 GPU 上把各属性收集到连续缓冲，再绑定给原 kernel；
+  支持 8/16/32 位属性格式、BGRA 排序、常量步长（`per-fix/compute-stage-in.patch`，已包含在 `0001-plugin.patch`）。
+- 测试：`hidpi/catest/sitest.swift` + `sitest.metal`（三组随机顶点布局，逐元素与 CPU 参考比对）。若 Memoji 仍显示旧的坏状态，清掉 `~/Library/Caches/Animoji` 里残留的缓存。
+
+### 23. 往 `framebufferOnly=NO` 的 CAMetalLayer 写入被丢（Photo Booth 预览纯黑）
+- 现象：Photo Booth 实时预览纯黑（拍照正常）；任何用 compute / Core Image 往这类 drawable 画图的程序都画不出来。插件日志里有 `ShaderWrite` 相关报错。
+- 根因：QuartzCore 对 `framebufferOnly=NO` 的 drawable 传 `MTLTextureUsageUnknown`（0）。Apple 自己的驱动把 0 当作“所有用途”，
+  插件却按字面当成“没有任何用途”，Core Image 的 compute 写入因缺少 ShaderWrite 被拒绝。
+- 修复：在创建纹理的各入口（普通、IOSurface、heap、buffer 纹理，含 `heapTextureSizeAndAlign`）把 0 读作 ShaderRead | ShaderWrite | RenderTarget。
+  旋钮 `NVMTL_UNKNOWN_USAGE=0`（写在 `nvrm610.conf`）恢复旧行为（`per-fix/unknown-usage-all.patch`）。
+- 测试：`hidpi/catest/drawable-writes.swift`（渲染 pass / compute / blit / Core Image 四种写法，每行必须是 OK）。
+- 附带：macOS 15 的 Photo Booth 在 iPhone 在附近时默认选连续互通相机，要手动切到内置/外接摄像头才有画面，这不是驱动问题。
+
 ---
 
 ## 三、翻译器（metal2vulkan 衍生）
@@ -181,6 +198,15 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - **Fn+F1**（触控板键）是键盘固件宏 `e05b 3c bc e0db`（≈17 ms 内，即 Win+F2），不是 EC 事件。`trackpad/SSDT-PS2KEYS.dsl` 通过 `PS2K.RMCF` 的 Macro Inversion 把它改成 `e06e`，再映射 `e06e=e037`、`e037=64`；PrtSc → F13，并把 `symbolichotkeys 184`（截图工具栏）绑到 F13。VoodooPS2 的 PrtSc 开关 → `kPS2M_setDisableTouchpad` → VoodooI2CHID 已验证。
 - 若更新 kext 后触控板失效：先看 `ioreg` 里 TPD0 → `VoodooI2CHIDDevice`，再重新跑 `install-voodooi2c.sh`。
 
+### 24. 内置麦克风与扬声器（Realtek ALC256 + AppleALC）
+- 现象：系统里没有内置输入/输出设备，只认 USB 音箱。Lilu 已加载但没有 AppleALC，音频控制器（`8086:51ca`）上没有任何驱动绑定。
+- 确认编解码器：别猜。这台机器的 Windows 分区里 `Windows\INF\setupapi.dev.log` 有 `INTELAUDIO\FUNC_01&VEN_10EC&DEV_0256&SUBSYS_155825E1`，即 **ALC256**，
+  子系统 ID `1558:25E1`（Clevo）。控制器类码 `0x040380`（DSP 模式）也能被 `AppleHDAController` 绑定，不需要改类码。
+- 修复：AppleALC 1.9.8（Lilu 插件，二进制不随本仓库提供，见 `audio/SOURCE.txt`）+ boot-arg `alcid=11`。11 是 Dell 7559 的 ALC256 layout（双喇叭 + 耳机口），在这台机器上可用；
+  ALC256 一共有 30 多个 layout，别的机器要逐个试。`audio/apply-alc.sh [layout]` 修改 ESP 的 `config.plist`（`Kernel/Add` + `boot-args`），先备份，可重复运行换 layout，`revert-alc.sh` 回滚。
+- 验证：重启后 `system_profiler SPAudioDataType` 出现 Built-in Microphone / Built-in Output。默认输出设备会保持上次使用的（USB 音箱），需要在系统设置里手动切一次。
+- 踩坑：PlistBuddy 在**一次调用里连续多个 `-c`** 往数组末尾 `Add dict` 再 `Add` 字段时，新元素会变成上一个元素的副本（报 "Entry Already Exists"）；每条命令单独调用一次就正常。
+
 ---
 
 ## 七、系统层杂项
@@ -205,6 +231,10 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 
 - **窗口从 Dock 恢复（取消最小化）闪一下**：Chrome 只有 web 内容区变白 0.23 s；Finder 等是一帧“非活动”外观。A/B 排除了 GPU 进程崩溃、遮挡后台化、异步 surface-in、零拷贝翻转、`--disable-mac-overlays`、GPU 栅格。
   结论：macOS 13+ 已知的取消最小化问题（Apple 开发者论坛 801112，Chrome 在列）+ 浏览器在 WS 使后备失效后的重绘。只能用“最小化到应用图标”/“缩放”效果绕开。
+- **Photo Booth 预览上下颠倒（但 FaceTime / QuickTime 正常）**：不是驱动问题。Photo Booth 用 `render:toMTLTexture:`（内部固定 `isFlipped=NO`）直接写 CAMetalLayer drawable；
+  `CIRenderDestination.h` 规定 `isFlipped=NO` 时图像**最下面**一行放在内存第 0 行（Metal 纹理的第 0 行在顶部），Apple 自带的软件渲染器写位图时结果完全一致，
+  而同族的 `toCVPixelBuffer` / `toBitmap` / `toIOSurface` 内部用 `YES`。逐层验证过：摄像头原始帧（各像素格式）、VideoToolbox 转换、Core Image 的 GPU 程序（翻转由主机侧传入的矩阵决定，纯 Apple 代码）、
+  窗口合成（图层 `scale(1,-1)` / 旋转 / `isGeometryFlipped` 都正常）都是对的。**不要在插件里“翻转”Core Image 的输出**，那会让所有已正确处理朝向的程序一起倒过来。
 - **B 站“骨架屏”等待**：站点数据加载，不是 GPU。
 - **开机后的短暂卡顿（“等一会才流畅”）**：冷着色器缓存（以翻译器哈希为键），首次启动后自行恢复；曾因未持久化 `VkPipelineCache` 每次开机重编所有 NVK 着色器，已在 v47 修复（`pcache`）。
 
@@ -222,3 +252,12 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - 额外一处本地改动：1.13 只在 Blackwell 上注册 NVENC，Ada 上我们的 NVENC 补丁（修复 15）会被绕开，所以插件默认在所有 GPU 上注册，设置环境变量 `NVMTL_NVENC_BLACKWELL_ONLY` 才恢复上游行为。
 - **没有**升级内核扩展。1.9.0→1.13.0 期间 NVRM 核心源码没有变化，变化的只有 NVAccel（无头 GPU、Intel 内置屏，仅用于面板不在独显上的笔记本）、NVRMFB（光标，已移植为修复 21；另有“多列出分辨率”，未移植）、新增的 NMIntelFB 与 NMHDA。对独显直连的机器升级没有收益，所以内核扩展仍以 1.9.0 为基线；若要升级，NVRM 与 NVK 的字节补丁偏移量需针对 1.13.0 的二进制重新核对。
 
+## 十、ESP 守护（efiguard）
+
+nvguard 只守护 `/Library` 下的驱动文件；**OpenCore ESP 上的修复**（AppleALC 与 `alcid`、Wi-Fi/蓝牙/NVDSM/BrightnessKeys/VoodooI2C 的 kext、`SSDT-PS2KEYS`、关键 boot-args）另有一个 `efiguard/`：
+- `install.sh` 把 `EFI/OC` 的 `config.plist`、`Kexts`、`ACPI`、`Drivers` 拍快照放进 `/Library/NullMoth/efiguard`（`chflags schg`），并注册 LaunchDaemon（开机 + 每 6 小时）。
+- 只修**缺失**或**丢了我们的修复**的东西：文件不见了就补回；`Kernel/Add` 条目被删/被禁用就按快照补回/重新启用；`alcid=`、`nvfb=1`、`nvaccel=1` 等关键 boot-arg 丢了就补回。
+  只有 `Lilu` 条目没了或 `config.plist` 不可用时才整份恢复。**仅仅与快照不同的文件**（可能是你有意升级）只记录 `ATTENTION`，不回退。被替换的文件先复制到 `/Library/NullMoth/efiguard-replaced`。
+- ESP 已被别人挂载时不会卸载它（只读检查，推迟修复）；不碰 `OpenCore.efi`、引导器和启动项。
+- 有意改过 EFI（`apply-*.sh`）之后要重跑 `install.sh` 刷新快照。日志 `/var/log/efiguard.log`，`nvguard/verify.sh` 里有对应的检查项。
+- 测试方式：设 `EFIGUARD_ROOT`（一个含 `EFI/OC` 的目录）和 `EFIGUARD_SNAP`、`EFIGUARD_TEST=1` 就能在 ESP 的副本上演练，不碰系统。

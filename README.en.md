@@ -4,7 +4,7 @@
 
 A collection of patches, byte-patch scripts and root-cause write-ups for running the
 [NullMoth NVIDIA driver](https://github.com/nullmoth/nvidia-macos-driver) (v1.9.0) on a **Hackintosh (OpenCore) with macOS 15.8.1
-and an RTX 4060 Laptop dGPU** (Clevo chassis, i7-13620H, BOE 0B40 2560×1440@165 Hz panel, Intel AX211, ELAN0420 I²C touchpad).
+and an RTX 4060 Laptop dGPU** (Clevo chassis, i7-13620H, BOE 0B40 2560×1440@165 Hz panel, Intel AX211, ELAN0420 I²C touchpad, ALC256 audio).
 
 **Not included:** any NullMoth/NVIDIA binary or firmware, your EFI / `config.plist`, ACPI dumps. Get the driver from upstream.
 What *is* included: source diffs against upstream v1.9.0 and v1.13.0, assertion-based binary patch scripts, kext/Lilu sources, install/rollback
@@ -28,11 +28,11 @@ scripts, regression test programs, and the analysis behind each fix.
 
 | Your situation | Applicable fixes |
 |---|---|
-| Any NullMoth-supported NVIDIA GPU on macOS 15 (user space, hardware independent) | 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 16, 20 |
+| Any NullMoth-supported NVIDIA GPU on macOS 15 (user space, hardware independent) | 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 16, 20, 22, 23 |
 | Needs a specific NullMoth build (byte patches / offsets are version bound) | 2, 5 (NVK part), 14, 15 |
 | Ada (RTX 40) only: NVDEC/NVENC t2d layout | 14, 15 |
 | Depends on your panel and mainboard | 1 (HiDPI: panel ID, refresh rate), 17 (brightness: `_DSM`/`_DOD` paths in your DSDT) |
-| Same hardware only | 18 (Intel AX211), 19 (ELAN0420 I²C touchpad) |
+| Same hardware only | 18 (Intel AX211), 19 (ELAN0420 I²C touchpad), 24 (ALC256 codec; the layout depends on the machine) |
 | Kext, preventive, higher risk | 21 (cursor-only commits) |
 
 Suggested order: user-space first (plugin, translator) and live with it; then byte patches as needed; kexts last. Do not copy the machine-specific items (1, 17, 18, 19) blindly.
@@ -62,8 +62,13 @@ Suggested order: user-space first (plugin, translator) and live with it; then by
 | 19 | Touchpad dead | VoodooI2C missing ADL-P PCI ID; VoodooGPIO TigerLakeLP class not built / wrong start chain | 3 patches + PS2 key SSDT |
 | 20 | CrossOver/Wine killed by `EXC_GUARD` | `amfi_get_out_of_my_way` makes every process "platform" → immovable task port | boot-arg `ipc_control_port_options=0` |
 | 21 | Rare flash of a stale frame on mouse movement (preventive, not reproduced locally) | NVRMFB cursor commits re-submitted the primary surface, racing the zero-copy flip | Cursor-only commits (ported from upstream 1.13.0) |
+| 22 | Memoji / SceneKit character meshes shatter | SceneKit skinning kernels use compute `stage_in`, which the plugin did not implement | Compute stage_in via an MSL gather kernel (8/16/32-bit formats, BGRA, constant step) — `patches/nullmoth-1.13.0/per-fix/compute-stage-in.patch` |
+| 23 | Photo Booth preview black (photos fine); compute / Core Image writes into a CAMetalLayer vanish | A `framebufferOnly=NO` drawable has usage `Unknown(0)`: Apple drivers read it as "all usages", the plugin read "none" → ShaderWrite refused | Read 0 as ShaderRead, ShaderWrite, RenderTarget (`NVMTL_UNKNOWN_USAGE=0` turns it off) — `per-fix/unknown-usage-all.patch`, `hidpi/catest/drawable-writes.swift` |
+| 24 | No built-in microphone / speakers | AppleALC missing; codec is a Realtek ALC256 (subsystem `1558:25E1`) | AppleALC + `alcid=11`, script edits the ESP `config.plist` — `audio/` |
 
 Details (Chinese): [docs/fixes.md](docs/fixes.md) · Pitfalls: [docs/pitfalls.md](docs/pitfalls.md).
+
+Guards: `nvguard/` keeps the driver files patched after a NullMoth reinstall; `efiguard/` keeps the fixes that live on the OpenCore ESP (kexts, `alcid`, boot-args) and can be rehearsed on a copy of the ESP. A Photo Booth preview that is *upside down* while FaceTime/QuickTime are fine is not a driver bug — see docs/fixes.md ("excluded" section).
 
 ## Licensing
 
