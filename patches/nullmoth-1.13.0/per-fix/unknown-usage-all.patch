@@ -1,0 +1,87 @@
+diff --git a/plugin/NVMTLDevice.m b/plugin/NVMTLDevice.m
+index f69a427..6509182 100644
+--- a/plugin/NVMTLDevice.m
++++ b/plugin/NVMTLDevice.m
+@@ -627,6 +627,7 @@ static BOOL nvmtl_desc_fbo(MTLTextureDescriptor *d) {
+     return d && [d respondsToSelector:s] && ((BOOL (*)(id, SEL))objc_msgSend)(d, s);
+ }
+ - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d {
++    d = nvmtl_unknown_usage_all(d);
+     if (nvmtl_vk_init()) return nil;
+     if (d.textureType == MTLTextureTypeTextureBuffer) {
+         extern int nvmtl_pixfmt_public(MTLPixelFormat f, uint32_t *vk, uint32_t *bpp, int *a8);
+@@ -748,6 +749,7 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
+ }
+ 
+ - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d iosurface:(IOSurfaceRef)surf plane:(NSUInteger)plane {
++    d = nvmtl_unknown_usage_all(d);
+     if (nvmtl_vk_init()) return nil;
+     size_t w = d.width, h = d.height;
+     if (!w || !h || w > UINT32_MAX || h > UINT32_MAX) return nil;
+@@ -1695,6 +1697,7 @@ - (MTLSizeAndAlign)heapBufferSizeAndAlignWithLength:(NSUInteger)len options:(MTL
+     MTLSizeAndAlign r = { sz, al }; return r;
+ }
+ - (MTLSizeAndAlign)heapTextureSizeAndAlignWithDescriptor:(MTLTextureDescriptor *)d {
++    d = nvmtl_unknown_usage_all(d);
+     uint32_t dvk = 0, dasp = 0, vkf = 0, bpp = 0; int a8 = 0; size_t sz = 0, al = 256;
+     int depth = d && nvmtl_depthfmt(d.pixelFormat, &dvk, &dasp) == 0;
+     if (!d || (!depth && nvmtl_pixfmt(d.pixelFormat, &vkf, &bpp, &a8))) { MTLSizeAndAlign r = { 0, 256 }; return r; }
+diff --git a/plugin/NVMTLObjects.h b/plugin/NVMTLObjects.h
+index 69e07a5..a5cd466 100644
+--- a/plugin/NVMTLObjects.h
++++ b/plugin/NVMTLObjects.h
+@@ -9,6 +9,26 @@
+ #import <Metal/Metal.h>
+ #import <IOSurface/IOSurface.h>
+ #include "nvmtl_vk.h"
++#include <stdatomic.h>
++
++void nvlog(const char *fmt, ...);
++// Metal: MTLTextureUsageUnknown (0) means "every usage". QuartzCore hands exactly that for a framebufferOnly=NO CAMetalLayer
++// drawable (CAMetalLayer.textureUsage defaults to 0), and Apple's drivers then allow - and report - ShaderRead|ShaderWrite|
++// RenderTarget. We used to read 0 as read-only: usage reported ShaderRead and no storage image was made, so Core Image
++// (Photo Booth live preview, "texture usage must include MTLTextureUsageShaderWrite") and compute kernels writing straight
++// into such a drawable (or into an Unknown-usage texture) wrote nothing. NVMTL_UNKNOWN_USAGE=0 restores the old reading (set it in
++// /Library/GPUBundles/nvmtl/nvrm610.conf: release builds drop NVMTL_* from the environment, see nvmtl_conf_knobs).
++static inline MTLTextureDescriptor *nvmtl_unknown_usage_all(MTLTextureDescriptor *d) {
++    static int off = -1;
++    if (off < 0) { const char *e = getenv("NVMTL_UNKNOWN_USAGE"); off = e && *e == '0'; }
++    if (!d || off || d.usage != MTLTextureUsageUnknown) return d;
++    MTLTextureDescriptor *c = [d copy];
++    c.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
++    static _Atomic unsigned long n; const unsigned long k = atomic_fetch_add(&n, 1) + 1;
++    if (!(k & (k - 1))) nvlog("texture usage Unknown(0) read as ShaderRead|ShaderWrite|RenderTarget like Apple (%lu so far in this process; first: %lux%lu fmt %lu)",
++                              k, (unsigned long)d.width, (unsigned long)d.height, (unsigned long)d.pixelFormat);
++    return c;
++}
+ 
+ static inline NSMutableData *nvmtl_fc_storage(NSUInteger count) {
+     const NSUInteger stride = 2 * sizeof(uint32_t) + sizeof(void *) + 16;
+diff --git a/plugin/NVMTLObjects.m b/plugin/NVMTLObjects.m
+index f1f9111..8ecc954 100644
+--- a/plugin/NVMTLObjects.m
++++ b/plugin/NVMTLObjects.m
+@@ -799,6 +799,7 @@ - (IOSurfaceRef)iosurface { return NULL; }
+ }
+ - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bpr {
+     extern int nvmtl_pixfmt_public(MTLPixelFormat f, uint32_t *vk, uint32_t *bpp, int *a8);
++    d = nvmtl_unknown_usage_all(d);
+     if (!d) return nil;
+     if (d.textureType == MTLTextureTypeTextureBuffer) return nvmtl_texbuf_make(self, d, offset);
+     size_t w = d.width, h = d.height;
+@@ -3817,6 +3818,7 @@ - (void)dealloc { for (uint32_t k = 0; k < _npk; k++) nvmtl_vk_image_destroy(&_p
+     extern int nvmtl_depthfmt_public(MTLPixelFormat f, uint32_t *vk, uint32_t *aspect);
+     extern nvk_queue *nvmtl_device_queue(void);
+     if (_type != MTLHeapTypePlacement) { nvlog("heap newTextureWithDescriptor:offset: on a non-placement heap"); return nil; }
++    d = nvmtl_unknown_usage_all(d);
+     if (!d) return nil;
+     NVMTLTexture *t = [NVMTLTexture new];
+     t->_fmt = d.pixelFormat; t->_mips = (uint32_t)(d.mipmapLevelCount ? d.mipmapLevelCount : 1);
+@@ -3947,6 +3949,7 @@ - (NSUInteger)maxAvailableSizeWithAlignment:(NSUInteger)a {
+     return t;
+ }
+ - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d {
++    d = nvmtl_unknown_usage_all(d);
+     if (!d) return nil;
+     MTLSizeAndAlign sa = [_dev heapTextureSizeAndAlignWithDescriptor:d];
+     NSUInteger charge = sa.size;
