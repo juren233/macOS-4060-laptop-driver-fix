@@ -9,3 +9,5 @@
 - `verify.sh`：无需 sudo 的只读体检（哈希、conf、LaunchDaemon、git 状态、最新 EFI 备份）。
 
 移植要改的：`install.sh` 顶部的各个哈希与源路径、`verify.sh` 里的目录。脚本里的 `~/work/…` 是作者本机路径。
+
+`verify.sh` 还检查 `efiguard`（ESP 守护）与 AppleALC/`alcid`；`efiguard/` 管 OpenCore ESP 上的修复，见 [../efiguard/README.md](../efiguard/README.md)。

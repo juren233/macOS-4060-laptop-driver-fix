@@ -1,0 +1,4 @@
+AppleALC 1.9.8 RELEASE (acidanthera, BSD-3-Clause) is not redistributed here. Download it yourself:
+https://github.com/acidanthera/AppleALC/releases/download/1.9.8/AppleALC-1.9.8-RELEASE.zip
+zip sha256 d4d36cd2da7863cf7cbfcb0892d45c08457f4f4ddd065a073dd010e46bd63bcb (3780656 bytes)
+Unpack it, then: APPLEALC_KEXT=/path/to/AppleALC.kext sudo -E ESP_DEV=... ESP_UUID=... bash apply-alc.sh [layout]

@@ -19,13 +19,21 @@ echo "== guard"
 if [[ -f $G/MANIFEST.sha256 ]]; then ( cd $G && shasum -a 256 -c MANIFEST.sha256 >/dev/null 2>&1 ) && { print "  OK     guard snapshot intact"; ok=$((ok+1)); } || { print "  CHANGED guard snapshot does not match its MANIFEST"; bad=$((bad+1)); }
 else print "  (no MANIFEST yet - re-run install.sh once)"; fi
 print "  last guard log lines:"; tail -3 /var/log/nvguard.log 2>/dev/null | sed 's/^/    /'
+echo "== EFI guard (AppleALC, Wi-Fi/BT, touchpad kexts on the ESP; repaired automatically at boot and every 6 h)"
+EG=/Library/NullMoth/efiguard
+[[ -f /Library/LaunchDaemons/local.efiguard.plist ]] && { print "  OK     efiguard daemon installed"; ok=$((ok+1)); } || { print "  MISSING efiguard daemon - run efiguard/install.sh (see efiguard/README.md)"; bad=$((bad+1)); }
+if [[ -f $EG/manifest.txt ]]; then print "  OK     ESP snapshot: $(wc -l < $EG/manifest.txt | tr -d ' ') files, $(wc -l < $EG/required-kexts.txt | tr -d ' ') required kexts"; ok=$((ok+1)); else print "  MISSING ESP snapshot"; bad=$((bad+1)); fi
+el=$(tail -1 /var/log/efiguard.log 2>/dev/null); print "  last efiguard log line: ${el:-none yet}"
+[[ $el == *ATTENTION* ]] && { print "  ATTENTION efiguard reports a problem on the ESP (see /var/log/efiguard.log); after a deliberate EFI change re-run efiguard/install.sh"; bad=$((bad+1)); }
 echo "== kernel side"
-for k in com.nullmoth.NVRM com.nullmoth.NVAccel com.nullmoth.NVRMFB com.nullmoth.NVRMAGDC local.juren.NVDSM local.juren.BTLEFix org.b00t0x.CpuTopologyRebuild as.vit9696.Lilu; do
+for k in com.nullmoth.NVRM com.nullmoth.NVAccel com.nullmoth.NVRMFB com.nullmoth.NVRMAGDC local.juren.NVDSM local.juren.BTLEFix org.b00t0x.CpuTopologyRebuild as.vit9696.Lilu as.vit9696.AppleALC; do
   if kmutil showloaded --list-only 2>/dev/null | grep -q " $k "; then print "  OK     $k loaded"; ok=$((ok+1)); else print "  NOT LOADED $k"; bad=$((bad+1)); fi; done
 ba=$(nvram boot-args 2>/dev/null); [[ $ba == *nvaccel=1* && $ba == *nvfb=1* ]] && { print "  OK     boot-args carry nvfb/nvaccel"; ok=$((ok+1)); } || { print "  CHANGED boot-args: $ba"; bad=$((bad+1)); }
+[[ $ba == *alcid=* ]] && { print "  OK     boot-args carry alcid (built-in audio layout: ${${ba##*alcid=}%% *})"; ok=$((ok+1)); } || { print "  CHANGED boot-args have no alcid (built-in mic/speakers need it): $ba"; bad=$((bad+1)); }
 csr=$(nvram csr-active-config 2>/dev/null | awk '{print $2}'); [[ -n $csr ]] && { print "  OK     csr-active-config set ($csr)"; ok=$((ok+1)); } || { print "  CHANGED csr-active-config is empty (NVRAM was reset? SIP is back to default)"; bad=$((bad+1)); }
 echo "== source of truth (git)"
 for d in ~/work/system ~/work/nvidia-setup ~/work/nvidia-setup/src/repo; do
   if [[ -d $d/.git ]]; then n=$(git -C $d status --short --untracked-files=no 2>/dev/null | wc -l | tr -d ' '); print "  $( [[ $n == 0 ]] && echo OK || echo UNCOMMITTED ) ${d:t}: $n modified tracked files ($(git -C $d branch --show-current))"; else print "  NO GIT $d"; fi; done
-b=(~/work/nvidia-setup/wifibt/backup/esp-OC-*.tar(N.om[1])); [[ -n $b ]] && print "  newest EFI backup: ${b:t} ($(stat -f %Sm -t %F $b))" || print "  NO EFI BACKUP found"
+b=$(ls -t ~/work/nvidia-setup/wifibt/backup/esp-OC-*.tar ~/work/nvidia-setup/audio/backup/esp-OC-*.tar 2>/dev/null | head -1)   # newest of the Wi-Fi/BT and audio EFI backups
+[[ -n $b ]] && print "  newest EFI backup: ${b:t} ($(stat -f %Sm -t %F $b))" || print "  NO EFI BACKUP found"
 echo; echo "result: $ok ok, $bad need attention"; exit $((bad>0))
