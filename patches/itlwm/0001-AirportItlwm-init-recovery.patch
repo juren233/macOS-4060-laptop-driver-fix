@@ -1,0 +1,117 @@
+diff --git a/AirportItlwm/AirportItlwmV2.cpp b/AirportItlwm/AirportItlwmV2.cpp
+index ea1c5ac..be650c0 100644
+--- a/AirportItlwm/AirportItlwmV2.cpp
++++ b/AirportItlwm/AirportItlwmV2.cpp
+@@ -113,11 +113,55 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
+ #endif
+ }
+ 
++// arg0: 0 = interface is down (init failed and cleared IFF_UP),
++//       1 = IFF_UP left set without IFF_RUNNING (init never ran / was skipped).
++IOReturn AirportItlwm::initRecoverGated(OSObject *owner, void *arg0, void *, void *, void *)
++{
++    AirportItlwm *that = OSDynamicCast(AirportItlwm, owner);
++    if (!that || !that->power_state)
++        return kIOReturnSuccess;
++    struct _ifnet *ifp = &that->fHalService->get80211Controller()->ic_ac.ac_if;
++    if (ifp->if_flags & IFF_RUNNING)
++        return kIOReturnSuccess;
++    bool staleUp = arg0 != NULL;
++    if (staleUp != ((ifp->if_flags & IFF_UP) != 0))
++        return kIOReturnSuccess;
++    that->initRecoverCount++;
++    IOLog("itlwm: init recovery #%u (%s), restarting firmware\n", that->initRecoverCount,
++          staleUp ? "stale IFF_UP" : "interface stopped while powered");
++    that->setProperty("ItlwmInitRecoveries", that->initRecoverCount, 32);
++    if (staleUp)
++        that->fHalService->disable(that->bsdInterface);
++    that->fHalService->enable(that->bsdInterface);
++    return kIOReturnSuccess;
++}
++
+ void AirportItlwm::watchdogAction(IOTimerEventSource *timer)
+ {
+     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
+     (*ifp->if_watchdog)(ifp);
+ 
++    // airportd only sends power-on once; if firmware init fails afterwards the
++    // driver stays off while reporting power on. Retry with backoff, which is
++    // what a manual Wi-Fi off/on does.
++    int flags = ifp->if_flags;
++    if (!power_state || (flags & IFF_RUNNING)) {
++        initRecoverTicks = 0;
++        initRecoverDelay = 3;
++        initStaleUpTicks = 0;
++    } else if (!(flags & IFF_UP)) {
++        initStaleUpTicks = 0;
++        if (++initRecoverTicks >= initRecoverDelay) {
++            initRecoverTicks = 0;
++            initRecoverDelay = MIN(initRecoverDelay * 2, 60U);
++            _fCommandGate->runAction(initRecoverGated, NULL);
++        }
++    } else if (++initStaleUpTicks >= 30) {
++        // A normal firmware load reaches IFF_RUNNING in well under 10 s.
++        initStaleUpTicks = 0;
++        _fCommandGate->runAction(initRecoverGated, (void *)1);
++    }
++
+     watchdogTimer->setTimeoutMS(kWatchDogTimerPeriod);
+ }
+ 
+@@ -141,6 +185,10 @@ bool AirportItlwm::init(OSDictionary *properties)
+     bool ret = super::init(properties);
+     awdlSyncEnable = true;
+     power_state = 0;
++    initRecoverTicks = 0;
++    initRecoverDelay = 3;
++    initRecoverCount = 0;
++    initStaleUpTicks = 0;
+     memset(geo_location_cc, 0, sizeof(geo_location_cc));
+     return ret;
+ }
+diff --git a/AirportItlwm/AirportItlwmV2.hpp b/AirportItlwm/AirportItlwmV2.hpp
+index 2cc2c69..f757936 100644
+--- a/AirportItlwm/AirportItlwmV2.hpp
++++ b/AirportItlwm/AirportItlwmV2.hpp
+@@ -240,6 +240,12 @@ public:
+     
+     //IO80211
+     uint8_t power_state;
++    // Init recovery: radio is on but firmware init failed and nobody retries.
++    uint32_t initRecoverTicks;
++    uint32_t initRecoverDelay;
++    uint32_t initRecoverCount;
++    uint32_t initStaleUpTicks;
++    static IOReturn initRecoverGated(OSObject *owner, void *arg0, void *, void *, void *);
+     struct ieee80211_node *fNextNodeToSend;
+     bool fScanResultWrapping;
+     IOTimerEventSource *scanSource;
+diff --git a/itlwm/hal_iwx/ItlIwx.cpp b/itlwm/hal_iwx/ItlIwx.cpp
+index 740cba0..3ccdfac 100644
+--- a/itlwm/hal_iwx/ItlIwx.cpp
++++ b/itlwm/hal_iwx/ItlIwx.cpp
+@@ -4895,7 +4895,14 @@ iwx_load_firmware(struct iwx_softc *sc)
+         return err;
+     }
+     
+-    err = iwx_wait_notification(sc, &sc->sc_uc.uc_intr, 1, 1000);
++    // At boot IO80211Family parks external ioctls for up to ~5 s each while the driver is not yet
++    // available, inside the work loop gate this driver shares with it. The ALIVE interrupt needs that
++    // gate, so the first load is held off 5-11 s (2026-10-12 boot logs). The old 1 s budget made
++    // some boots fail both attempts; success still returns as soon as ALIVE is processed.
++    uint64_t aliveStart = mach_absolute_time(), aliveNs;
++    err = iwx_wait_notification(sc, &sc->sc_uc.uc_intr, 1, 15000);
++    absolutetime_to_nanoseconds(mach_absolute_time() - aliveStart, &aliveNs);
++    IOLog("itlwm: firmware alive wait %llu ms, err %d ok %d\n", aliveNs / 1000000ULL, err, sc->sc_uc.uc_ok);
+     if (err == ENXIO)
+         return err;
+     if (!err && !sc->sc_uc.uc_ok)
+@@ -10770,7 +10777,7 @@ iwx_init(struct _ifnet *ifp)
+             break;
+         generation = ++sc->sc_generation;
+         iwx_stop_device(sc);
+-        if (attempt != 0 || err == ENXIO || !(ifp->if_flags & IFF_UP) ||
++        if (attempt >= 2 || err == ENXIO || !(ifp->if_flags & IFF_UP) ||
+             (sc->sc_flags & (IWX_FLAG_RFKILL | IWX_FLAG_HW_ERR)))
+             return err;
+         XYLog("%s: retrying firmware initialization after error %d\n", DEVNAME(sc), err);
