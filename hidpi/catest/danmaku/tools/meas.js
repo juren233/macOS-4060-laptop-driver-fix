@@ -1,0 +1,4 @@
+new Promise(res=>{const v=document.querySelector("video"); const q0=v.getVideoPlaybackQuality(); const d=[]; let last=performance.now(); let nmax=0; const t0=last;
+function f(t){d.push(t-last); last=t; const n=document.querySelectorAll(".bili-danmaku-x-dm, .dmx").length; if(n>nmax)nmax=n; if(t-t0<10000) requestAnimationFrame(f); else {const q=v.getVideoPlaybackQuality(); d.shift(); d.sort((a,b)=>a-b); const p=x=>d[Math.floor(d.length*x)].toFixed(1);
+ res({frames:d.length, fps:(d.length/10).toFixed(1), p50:p(.5), p95:p(.95), p99:p(.99), max:d[d.length-1].toFixed(1), over12:d.filter(x=>x>12).length, over20:d.filter(x=>x>20).length, vframes:q.totalVideoFrames-q0.totalVideoFrames, vdropped:q.droppedVideoFrames-q0.droppedVideoFrames, dm_max:nmax, res:v.videoWidth+"x"+v.videoHeight, paused:v.paused});}}
+requestAnimationFrame(f);})

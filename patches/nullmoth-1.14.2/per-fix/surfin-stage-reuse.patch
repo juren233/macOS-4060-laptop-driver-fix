@@ -1,0 +1,35 @@
+diff --git a/plugin/NVMTLDevice.m b/plugin/NVMTLDevice.m
+index 112ef7f..bd5521f 100644
+--- a/plugin/NVMTLDevice.m
++++ b/plugin/NVMTLDevice.m
+@@ -687,7 +687,13 @@ static BOOL nvmtl_desc_fbo(MTLTextureDescriptor *d) {
+ typedef struct { uint32_t magic, seed, gen; } nvmtl_vram_tag;
+ #define NVMTL_VRAM_MAGIC 0x564d5634u
+ static unsigned long long g_surf_vram, g_surf_private, g_surfin_skip, g_surfin_copy;
+-static CFStringRef nvmtl_vram_tag_key(NSUInteger plane) { return CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), (unsigned long)plane); }
++// Local: planes 0-3 reuse one key each (callers CFRelease it; the extra retain keeps it alive). Formatting a new string on
++// every video-frame upload showed up at ~3% of Chrome's GPU main thread.
++static CFStringRef nvmtl_vram_tag_key(NSUInteger plane) {
++    static CFStringRef keys[4]; static dispatch_once_t once;
++    dispatch_once(&once, ^{ for (unsigned long i = 0; i < 4; i++) keys[i] = CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), i); });
++    if (plane < 4) return CFRetain(keys[plane]);
++    return CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), (unsigned long)plane); }
+ static int nvmtl_vram_tag_current(IOSurfaceRef surf, NSUInteger plane, uint32_t seed)
+ {
+     CFStringRef k = nvmtl_vram_tag_key(plane); CFTypeRef v = IOSurfaceCopyValue(surf, k); CFRelease(k);
+diff --git a/plugin/nvmtl_vk.c b/plugin/nvmtl_vk.c
+index ad48801..e1af5ae 100644
+--- a/plugin/nvmtl_vk.c
++++ b/plugin/nvmtl_vk.c
+@@ -5729,7 +5729,10 @@ static void nvmtl_upl_done(nvmtl_upl *u)
+ {
+     const int r = nvmtl_vk_submit_finish(&u->f);
+     if (r == -2) { g_upl_fail++; free(u); return; }   // device lost: keep what the GPU may still touch, like submit_finish does
+-    if (u->stage.buf) nvmtl_vk_buffer_destroy(&u->stage);
++    // Local: park the staging buffer for the next upload of the same size instead of freeing it. Chrome uploads every 4K
++    // video frame it composites itself (danmaku over the video): a new 8 MB + 4 MB buffer per frame spent ~45% of the
++    // GPU process's main thread in allocate/free and the rest copying into freshly faulted pages.
++    if (u->stage.buf) { if (r) nvmtl_vk_buffer_destroy(&u->stage); else nvmtl_vk_buffer_retire(&u->stage); }
+     if (u->hold && u->rel) u->rel(u->hold);
+     if (r) g_upl_fail++;
+     free(u);

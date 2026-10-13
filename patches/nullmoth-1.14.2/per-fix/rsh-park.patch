@@ -1,0 +1,152 @@
+diff --git a/plugin/NVMTLObjects.m b/plugin/NVMTLObjects.m
+index 9f80cba..27319e4 100644
+--- a/plugin/NVMTLObjects.m
++++ b/plugin/NVMTLObjects.m
+@@ -1192,7 +1192,7 @@ - (void)dealloc {
+     if (_stTwin.img) nvmtl_vk_image_destroy(&_stTwin);
+     if (!_parent && _vramOn) { nvmtl_vk_buffer_destroy(&_vramBuf); _vramOn = NO; }
+     if (!_parent && _selfShadowOn) { nvmtl_vk_image_destroy(&_selfShadow); _selfShadowOn = NO; }
+-    if (!_parent && _rshOn) { nvmtl_vk_image_destroy(&_rsh); _rshOn = NO; }
++    if (!_parent && _rshOn) { nvmtl_vk_rsh_release(&_rsh); _rshOn = NO; }
+     if (!_parent && _surfImp.buf) { nvmtl_vk_buffer_destroy(&_surfImp); atomic_fetch_sub(&gSurfImpBytes, _surfImpLen); _surfImpLen = 0; }
+     if (_useHeld && _surf) { IOSurfaceDecrementUseCount(_surf); _useHeld = NO; atomic_fetch_sub(&gSurfUseHeld, 1); }
+     if (_surfOwned && _surf) CFRelease(_surf);
+diff --git a/plugin/nvmtl_vk.c b/plugin/nvmtl_vk.c
+index e1af5ae..876e086 100644
+--- a/plugin/nvmtl_vk.c
++++ b/plugin/nvmtl_vk.c
+@@ -1115,6 +1115,7 @@ static int bar1_memtype(uint32_t bits, VkDeviceSize size)
+     { static int said; if (!said++) nvlog("vk: shared-in-VRAM: no DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT type in bits 0x%x", bits); }
+     return -1;
+ }
++static void rpark_drain(void);
+ static int  pool_buffer_create(size_t size, nvk_buffer *out);
+ static int  pool_buffer_create_in(int vram, size_t size, nvk_buffer *out);
+ static int  vpool_on(void);
+@@ -1326,7 +1327,7 @@ static int nvmtl_vk_buffer_create_body(size_t size, int host_visible, nvk_buffer
+                             : nvmtl_opaque_AllocateMemory(g_dev, &mai, NULL, &out->mem);
+         if (br != VK_SUCCESS) {
+             g_buf_vram_refused++;
+-            bpark_drain_private();
++            bpark_drain_private(); rpark_drain();
+             nvlog("vk: private buffer of %zu bytes REFUSED VRAM (%s) -> %d: %llu MB free, %llu MB headroom, "
+                   "heapUsage %llu of budget %llu MB (%s), %llu buffers live, %llu refused so far "
+                   "- the caller places it in system memory",
+@@ -5975,10 +5976,104 @@ int nvmtl_vk_rsh_on(void)
+     }
+     return on;
+ }
++// Render-shadow park. Chrome draws a masked danmaku layer into a NEW IOSurface on most frames (SkiaRenderer's render-pass
++// overlays live about one frame), so every frame paid for a fresh tiled shadow - a VRAM allocation, two GPU VA ranges and
++// their maps (~0.3 ms) - and for freeing the last one (~0.15 ms of RM calls). A dead texture's shadow is parked here instead
++// and handed to the next shadow of the same size and format. Its GPU work is over: a texture is released only after the
++// command buffers that used it completed, which is why -dealloc already destroyed the shadow outright. Its stale contents are
++// never read: a shadow's first pass either clears it or primes it from the surface, the same as a new one. Its layout field
++// still tells the barriers where it is. Parked shadows are freed after ~2 s unused, and at once when VRAM is refused.
++// NVMTL_RSH_PARK=0 (nvrm610.conf) frees every shadow at once, as before.
++#define NVMTL_RSHPARK_N     8
++#define NVMTL_RSHPARK_BYTES (160ull << 20)
++#define NVMTL_RSHPARK_AGE_NS 2000000000ull
++static pthread_mutex_t g_rpark_lock = PTHREAD_MUTEX_INITIALIZER;
++static struct { nvk_image img; uint64_t t; } g_rpark[NVMTL_RSHPARK_N];
++static unsigned g_rpark_n; static uint64_t g_rpark_bytes; static int g_rpark_timer;
++static _Atomic uint64_t g_rpark_parked, g_rpark_reused, g_rpark_aged, g_rpark_dropped;
++static int rpark_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_RSH_PARK"); on = !(e && e[0] == '0');
++        nvlog("render-shadow park: %s (NVMTL_RSH_PARK=%s)", on ? "a dead texture's tiled shadow is reused by the next shadow of its size"
++              : "OFF - every shadow is freed with its texture", e ? e : "unset"); }
++    return on;
++}
++static void rpark_census(const char *what)
++{
++    const uint64_t n = atomic_load(&g_rpark_parked) + atomic_load(&g_rpark_reused);
++    if (n & (n - 1)) return;
++    nvlog("render-shadow park (%s): %llu parked, %llu reused, %llu aged out, %llu dropped; %u held, %llu bytes", what,
++          (unsigned long long)atomic_load(&g_rpark_parked), (unsigned long long)atomic_load(&g_rpark_reused),
++          (unsigned long long)atomic_load(&g_rpark_aged), (unsigned long long)atomic_load(&g_rpark_dropped),
++          g_rpark_n, (unsigned long long)g_rpark_bytes);
++}
++// Frees parked shadows older than min_age_ns (0 = all). Returns how many are still held.
++static unsigned rpark_evict(uint64_t min_age_ns)
++{
++    nvk_image out[NVMTL_RSHPARK_N]; unsigned nout = 0, left;
++    const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    pthread_mutex_lock(&g_rpark_lock);
++    unsigned w = 0;
++    for (unsigned k = 0; k < g_rpark_n; k++) {
++        if (now - g_rpark[k].t >= min_age_ns) { g_rpark_bytes -= g_rpark[k].img.alloc; out[nout++] = g_rpark[k].img; }
++        else g_rpark[w++] = g_rpark[k]; }
++    g_rpark_n = left = w;
++    pthread_mutex_unlock(&g_rpark_lock);
++    for (unsigned k = 0; k < nout; k++) nvmtl_vk_image_destroy(&out[k]);
++    if (nout) atomic_fetch_add(min_age_ns ? &g_rpark_aged : &g_rpark_dropped, nout);
++    return left;
++}
++static void rpark_drain(void) { rpark_evict(0); }
++static void rpark_arm_timer(void)
++{
++    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)NVMTL_RSHPARK_AGE_NS), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
++        const unsigned left = rpark_evict(NVMTL_RSHPARK_AGE_NS);
++        pthread_mutex_lock(&g_rpark_lock); const int again = left && g_rpark_n; if (!again) g_rpark_timer = 0; pthread_mutex_unlock(&g_rpark_lock);
++        if (again) rpark_arm_timer();
++    });
++}
++void nvmtl_vk_rsh_release(nvk_image *i)
++{
++    if (!i || !i->img) return;
++    if (g_state != 1 || !rpark_on() || i->placed || i->sysmem || !i->alloc || i->alloc > (NVMTL_RSHPARK_BYTES >> 1)) { nvmtl_vk_image_destroy(i); return; }
++    nvk_image victim = {0}; int arm = 0;
++    pthread_mutex_lock(&g_rpark_lock);
++    if (g_rpark_n == NVMTL_RSHPARK_N || g_rpark_bytes + i->alloc > NVMTL_RSHPARK_BYTES) {   // full: the oldest goes
++        if (g_rpark_n) { victim = g_rpark[0].img; g_rpark_bytes -= victim.alloc;
++            memmove(&g_rpark[0], &g_rpark[1], (g_rpark_n - 1) * sizeof g_rpark[0]); g_rpark_n--; } }
++    if (g_rpark_n < NVMTL_RSHPARK_N && g_rpark_bytes + i->alloc <= NVMTL_RSHPARK_BYTES) {
++        g_rpark[g_rpark_n].img = *i; g_rpark[g_rpark_n].t = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); g_rpark_n++; g_rpark_bytes += i->alloc;
++        memset(i, 0, sizeof *i);
++        if (!g_rpark_timer) { g_rpark_timer = 1; arm = 1; } }
++    pthread_mutex_unlock(&g_rpark_lock);
++    if (victim.img) { nvmtl_vk_image_destroy(&victim); atomic_fetch_add(&g_rpark_dropped, 1); }
++    if (i->img) { nvmtl_vk_image_destroy(i); atomic_fetch_add(&g_rpark_dropped, 1); return; }
++    atomic_fetch_add(&g_rpark_parked, 1); rpark_census("park");
++    if (arm) rpark_arm_timer();
++}
++// Every parked image came from nvmtl_vk_rsh_create's one create_typed call, so size and format pick an identical one.
++static int rpark_take(uint32_t w, uint32_t h, uint32_t fmt, nvk_image *out)
++{
++    if (!rpark_on()) return -1;
++    int hit = -1;
++    pthread_mutex_lock(&g_rpark_lock);
++    for (unsigned k = g_rpark_n; k-- > 0; ) if (g_rpark[k].img.w == w && g_rpark[k].img.h == h && g_rpark[k].img.fmt == fmt) { hit = (int)k; break; }
++    if (hit >= 0) {
++        *out = g_rpark[hit].img; g_rpark_bytes -= out->alloc;
++        memmove(&g_rpark[hit], &g_rpark[hit + 1], (g_rpark_n - (unsigned)hit - 1) * sizeof g_rpark[0]); g_rpark_n--; }
++    pthread_mutex_unlock(&g_rpark_lock);
++    if (hit < 0) return -1;
++    atomic_fetch_add(&g_rpark_reused, 1); rpark_census("reuse");
++    return 0;
++}
+ int nvmtl_vk_rsh_create(const nvk_image *lin, nvk_image *out)
+ {
+     if (!lin || !lin->img || !lin->w || !lin->h || lin->samples > 1) return -1;
+-    return nvmtl_vk_image_create_typed(lin->w, lin->h, lin->fmt, lin->bpp, 0, 1, 0, 2, 1, out);
++    if (!rpark_take(lin->w, lin->h, lin->fmt, out)) return 0;
++    int r = nvmtl_vk_image_create_typed(lin->w, lin->h, lin->fmt, lin->bpp, 0, 1, 0, 2, 1, out);
++    if (r && g_rpark_n) { rpark_drain(); r = nvmtl_vk_image_create_typed(lin->w, lin->h, lin->fmt, lin->bpp, 0, 1, 0, 2, 1, out); }
++    return r;
+ }
+ int nvmtl_vk_cmd_rsh_copy(nvk_cmdbuf *c, nvk_image *from, nvk_image *to)
+ {
+diff --git a/plugin/nvmtl_vk.h b/plugin/nvmtl_vk.h
+index ad62eaa..e34b55c 100644
+--- a/plugin/nvmtl_vk.h
++++ b/plugin/nvmtl_vk.h
+@@ -243,6 +243,7 @@ int  nvmtl_vk_cmd_selfsnapshot_rects(nvk_cmdbuf *c, nvk_image *att, nvk_image *s
+ // Tiled render shadow of a shared-VRAM render target (see nvmtl_vk.c)
+ int  nvmtl_vk_rsh_on(void);
+ int  nvmtl_vk_rsh_create(const nvk_image *lin, nvk_image *out);
++void nvmtl_vk_rsh_release(nvk_image *i);   // parks a dead texture's shadow for the next one of its size (or frees it)
+ int  nvmtl_vk_cmd_rsh_copy(nvk_cmdbuf *c, nvk_image *from, nvk_image *to);
+ void nvmtl_vk_cmd_set_stencil(nvk_cmdbuf *c, int enable, const uint32_t *front6, const uint32_t *back6);
+ int  nvmtl_vk_cmd_retire_view(nvk_cmdbuf *c, void *view);

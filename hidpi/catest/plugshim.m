@@ -1,4 +1,4 @@
-// plugshim: DYLD_INSERT_LIBRARIES=plugshim.dylib NVMTL_TEST_PLUGIN=/path/NVMTLDriver <test> - makes
+// plugshim: DYLD_INSERT_LIBRARIES=plugshim.dylib NVMTL_TEST_PLUGIN=/path/NVMTLDriver <test> - makes [SHIM_ICD=<libvulkan_nouveau>]
 // MTLCreateSystemDefaultDevice() in a catest binary return a device of the given plugin build (not the installed one).
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -22,3 +22,13 @@ static void *shim_copy_all(void) { return (void *)CFBridgingRetain(@[shim_create
 __attribute__((used)) static struct { const void *rep, *orig; } interposers[] __attribute__((section("__DATA,__interpose"))) = {
     { (const void *)shim_create, (const void *)MTLCreateSystemDefaultDevice },
     { (const void *)shim_copy_all, (const void *)MTLCopyAllDevices } };
+// SHIM_ICD=/path/libvulkan_nouveau.dylib: the plugin's dlopen of the installed Vulkan driver loads this file instead
+// (a release plugin ignores NVMTL_ICD_LIB, so this is the only way to pair a test build with a test driver)
+#include <string.h>
+static void *shim_dlopen(const char *path, int mode) {
+    const char *alt = getenv("SHIM_ICD");
+    if (path && alt && !strcmp(path, "/Library/GPUBundles/nvmtl/libvulkan_nouveau.dylib")) path = alt;
+    return dlopen(path, mode);
+}
+__attribute__((used)) static struct { const void *rep, *orig; } interposers_dl[] __attribute__((section("__DATA,__interpose"))) = {
+    { (const void *)shim_dlopen, (const void *)dlopen } };

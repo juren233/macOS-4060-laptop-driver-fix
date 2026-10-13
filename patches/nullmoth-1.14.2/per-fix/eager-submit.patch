@@ -1,0 +1,105 @@
+diff --git a/plugin/NVMTLEventSync.m b/plugin/NVMTLEventSync.m
+index 9b1652b..375bb6d 100644
+--- a/plugin/NVMTLEventSync.m
++++ b/plugin/NVMTLEventSync.m
+@@ -22,6 +22,9 @@ @interface NVMTLSubmissionPart : NSObject {
+ }
+ @end
+ static _Atomic unsigned gsub_inflight;
++// Local (eager submit): the command buffer whose current part the execution worker is handling itself (not submitted ahead).
++// The ahead pass, which may now also run on nvmtl.submit, must not touch it or anything queued after it. Guarded by the class lock.
++static __unsafe_unretained id nvmtl_gsub_hold;
+ static _Atomic unsigned long long gsub_ahead, gsub_peak;
+ static NSMutableArray *nvmtl_quarantined_parts;
+ static int nvmtl_gsub_finish(NVMTLSubmissionPart *part) {
+@@ -173,6 +176,7 @@ - (void)nvmtlCollectDeviceTiming:(nvk_cmdbuf *)commands {
+     }
+ }
+ - (void)nvmtlFinishExecution:(NSError *)error {
++    @synchronized ([NVMTLCommandBuffer class]) { _nextSubmit = NSUIntegerMax; }
+     for (NSUInteger i = _nextPart; i < _parts.count; i++) {
+         NVMTLSubmissionPart *p = _parts[i];
+         if (![p isKindOfClass:[NVMTLSubmissionPart class]] || !p->inflight) continue;
+@@ -197,7 +201,7 @@ - (void)nvmtlFinishExecution:(NSError *)error {
+     _cbError = error; _cbstatus = error ? MTLCommandBufferStatusError : MTLCommandBufferStatusCompleted;
+     _executionDone = YES;
+     [_completionCondition unlock];
+-    [_parts removeAllObjects];
++    @synchronized ([NVMTLCommandBuffer class]) { [_parts removeAllObjects]; }
+     // Applications may retain completed command buffers. Pending overwrite
+     // bookkeeping must not keep their IOSurfaces and VRAM alive indefinitely.
+     [_surfOverwrites removeAllObjects]; _surfOverwrites = nil;
+@@ -257,6 +261,7 @@ static void nvmtl_gsub_census(void) {
+ }
+ - (BOOL)nvmtlSubmitAhead {
+     if (_executionDone || _cbError || !_committed) return NO;
++    if (self == nvmtl_gsub_hold) return NO;
+     if (_nextSubmit < _nextPart) _nextSubmit = _nextPart;
+     while (_nextSubmit < _parts.count) {
+         if (atomic_load(&gsub_inflight) >= nvmtl_gsub_cap()) return NO;
+@@ -328,6 +333,15 @@ static void nvmtl_gsub_ahead_pass1(void) {
+     }
+ }
+ - (BOOL)nvmtlAdvancePart {
++    BOOL hold = NO;
++    @synchronized ([NVMTLCommandBuffer class]) {
++        if (!_executionDone && _nextPart < _parts.count && _nextSubmit <= _nextPart) { hold = YES; nvmtl_gsub_hold = self; }
++    }
++    const BOOL r = [self nvmtlAdvancePartBody];
++    if (hold) @synchronized ([NVMTLCommandBuffer class]) { nvmtl_gsub_hold = nil; }
++    return r;
++}
++- (BOOL)nvmtlAdvancePartBody {
+     if (_executionDone) return NO;
+     if (_cbError) { [self nvmtlFinishExecution:_cbError]; return YES; }
+     if (_nextPart >= _parts.count) { [self nvmtlFinishExecution:nil]; return YES; }
+@@ -394,8 +408,9 @@ - (BOOL)nvmtlAdvancePart {
+         }
+         ((void(*)(id,SEL,uint64_t))objc_msgSend)(event, @selector(setSignaledValue:), [s[1] unsignedLongLongValue]);
+     }
+-    _parts[_nextPart++] = [NSNull null];
+-    if (_nextPart == _parts.count) [self nvmtlFinishExecution:nil];
++    BOOL last;
++    @synchronized ([NVMTLCommandBuffer class]) { _parts[_nextPart++] = [NSNull null]; last = _nextPart == _parts.count; }
++    if (last) [self nvmtlFinishExecution:nil];
+     return YES;
+ }
+ - (void)nvmtlSubmitWithEvents {
+@@ -438,6 +453,29 @@ static void nvmtl_pump_buffers_sync(void) {
+ }
+ 
+ static uint64_t nvmtl_pump_generation;
++/* Local (eager submit, NVMTL_GSUB_EAGER, default on): run the submit-ahead pass as soon as a buffer is committed, on its own serial
++ * queue, instead of only at the top of the execution worker's loop. The worker blocks while it waits for a part to finish and
++ * publishes its IOSurfaces; buffers committed meanwhile were neither submitted nor "scheduled" until it came back, so Chrome's
++ * waitUntilScheduled waited for the previous frame's GPU work + readback (31% of CrGpuMain with Bilibili's smart danmaku mask). */
++static BOOL nvmtl_gsub_eager_on(void) {
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_GSUB_EAGER"); on = !(e && e[0] == '0');
++        nvlog("commit: eager submit-ahead %s (NVMTL_GSUB_EAGER=%s)", on ? "ON - committed buffers are submitted at once on nvmtl.submit" : "off - only the execution worker submits ahead", e ? e : "unset"); }
++    return on;
++}
++static _Atomic int nvmtl_eager_queued;
++static void nvmtl_gsub_eager_kick(void) {
++    static dispatch_once_t once; static dispatch_queue_t q;
++    dispatch_once(&once, ^{ q = dispatch_queue_create("nvmtl.submit", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0)); });
++    // A full in-flight window has nothing to submit; the worker's own pass refills it as parts finish.
++    if (atomic_load(&gsub_inflight) >= nvmtl_gsub_cap()) return;
++    if (atomic_exchange(&nvmtl_eager_queued, 1)) return;
++    dispatch_async(q, ^{ @autoreleasepool {
++        atomic_store(&nvmtl_eager_queued, 0);
++        nvmtl_vk_clock_refresh();
++        @synchronized ([NVMTLCommandBuffer class]) { nvmtl_gsub_ahead_pass(); }
++    } });
++}
+ static void nvmtl_pump_buffers(void) {
+     static dispatch_once_t once; static dispatch_queue_t worker;
+     const BOOL async = nvmtl_async_commit_on();
+@@ -446,6 +484,7 @@ static void nvmtl_pump_buffers(void) {
+     @synchronized ([NVMTLCommandBuffer class]) {
+         if (!nvmtl_pending_buffers.count) return;
+         ++nvmtl_pump_generation;
++        if (nvmtl_gsub_ahead_on() && nvmtl_gsub_eager_on()) nvmtl_gsub_eager_kick();
+         if (nvmtl_pumping) return;
+         nvmtl_pumping = YES;
+         dispatch_async(worker, ^{

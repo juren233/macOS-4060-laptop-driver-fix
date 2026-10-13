@@ -1,0 +1,2441 @@
+diff --git a/translator/translator/Cargo.lock b/translator/translator/Cargo.lock
+index 98a2a25..5b9e72d 100644
+--- a/translator/translator/Cargo.lock
++++ b/translator/translator/Cargo.lock
+@@ -2,39 +2,6 @@
+ # It is not intended for manual editing.
+ version = 4
+ 
+-[[package]]
+-name = "ahash"
+-version = "0.8.12"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+-dependencies = [
+- "cfg-if",
+- "once_cell",
+- "version_check",
+- "zerocopy",
+-]
+-
+-[[package]]
+-name = "ash"
+-version = "0.38.0+1.3.281"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
+-dependencies = [
+- "libloading",
+-]
+-
+-[[package]]
+-name = "atomic-waker"
+-version = "1.1.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+-
+-[[package]]
+-name = "base64"
+-version = "0.22.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+-
+ [[package]]
+ name = "bitflags"
+ version = "2.13.2"
+@@ -42,1589 +9,127 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
+ 
+ [[package]]
+-name = "block-buffer"
+-version = "0.10.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
+-dependencies = [
+- "generic-array",
+-]
+-
+-[[package]]
+-name = "block2"
+-version = "0.6.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
+-dependencies = [
+- "objc2",
+-]
+-
+-[[package]]
+-name = "bumpalo"
+-version = "3.20.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+-
+-[[package]]
+-name = "bytes"
+-version = "1.12.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+-
+-[[package]]
+-name = "cc"
+-version = "1.4.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a3eb0f42d6c360dc3f8a821f6bf2fdea7f72bfd36b3076eb0e6d1e9e0752fff4"
+-dependencies = [
+- "find-msvc-tools",
+- "shlex",
+-]
+-
+-[[package]]
+-name = "cfg-if"
+-version = "1.0.4"
++name = "itoa"
++version = "1.0.18"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
++checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+ 
+ [[package]]
+-name = "cfg_aliases"
+-version = "0.2.2"
++name = "libc"
++version = "0.2.189"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
++checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+ 
+ [[package]]
+-name = "chacha20"
+-version = "0.10.2"
++name = "memchr"
++version = "2.8.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
+-dependencies = [
+- "cfg-if",
+- "cpufeatures 0.3.1",
+- "rand_core",
+-]
++checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+ 
+ [[package]]
+-name = "cpufeatures"
+-version = "0.2.17"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
++name = "metal2vulkan"
++version = "0.1.0"
+ dependencies = [
+- "libc",
++ "serde",
++ "serde_json",
++ "spirv",
++ "wait-timeout",
+ ]
+ 
+ [[package]]
+-name = "cpufeatures"
+-version = "0.3.1"
++name = "proc-macro2"
++version = "1.0.107"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
++checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
+ dependencies = [
+- "libc",
++ "unicode-ident",
+ ]
+ 
+ [[package]]
+-name = "crypto-common"
+-version = "0.1.7"
++name = "quote"
++version = "1.0.47"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
++checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
+ dependencies = [
+- "generic-array",
+- "typenum",
++ "proc-macro2",
+ ]
+ 
+ [[package]]
+-name = "digest"
+-version = "0.10.7"
++name = "serde"
++version = "1.0.229"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
++checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
+ dependencies = [
+- "block-buffer",
+- "crypto-common",
++ "serde_core",
++ "serde_derive",
+ ]
+ 
+ [[package]]
+-name = "dispatch2"
+-version = "0.3.1"
++name = "serde_core"
++version = "1.0.229"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
++checksum = "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48"
+ dependencies = [
+- "bitflags",
+- "objc2",
++ "serde_derive",
+ ]
+ 
+ [[package]]
+-name = "displaydoc"
+-version = "0.2.7"
++name = "serde_derive"
++version = "1.0.229"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
++checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+- "syn 3.0.5",
+-]
+-
+-[[package]]
+-name = "dyn-clone"
+-version = "1.0.20"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+-
+-[[package]]
+-name = "fallible-iterator"
+-version = "0.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+-
+-[[package]]
+-name = "fallible-streaming-iterator"
+-version = "0.1.9"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+-
+-[[package]]
+-name = "find-msvc-tools"
+-version = "0.1.12"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
+-
+-[[package]]
+-name = "form_urlencoded"
+-version = "1.2.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+-dependencies = [
+- "percent-encoding",
+-]
+-
+-[[package]]
+-name = "futures-channel"
+-version = "0.3.34"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
+-dependencies = [
+- "futures-core",
+- "futures-sink",
+-]
+-
+-[[package]]
+-name = "futures-core"
+-version = "0.3.34"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
+-
+-[[package]]
+-name = "futures-io"
+-version = "0.3.34"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
+-
+-[[package]]
+-name = "futures-sink"
+-version = "0.3.34"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d"
+-
+-[[package]]
+-name = "futures-task"
+-version = "0.3.34"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd"
+-
+-[[package]]
+-name = "futures-util"
+-version = "0.3.34"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
+-dependencies = [
+- "futures-core",
+- "futures-io",
+- "futures-sink",
+- "futures-task",
+- "memchr",
+- "pin-project-lite",
+- "slab",
+-]
+-
+-[[package]]
+-name = "generic-array"
+-version = "0.14.7"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
+-dependencies = [
+- "typenum",
+- "version_check",
+-]
+-
+-[[package]]
+-name = "getrandom"
+-version = "0.2.17"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+-dependencies = [
+- "cfg-if",
+- "js-sys",
+- "libc",
+- "wasi",
+- "wasm-bindgen",
+-]
+-
+-[[package]]
+-name = "getrandom"
+-version = "0.4.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
+-dependencies = [
+- "cfg-if",
+- "js-sys",
+- "libc",
+- "r-efi",
+- "rand_core",
+- "wasm-bindgen",
+-]
+-
+-[[package]]
+-name = "hashbrown"
+-version = "0.14.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+-dependencies = [
+- "ahash",
+-]
+-
+-[[package]]
+-name = "hashlink"
+-version = "0.9.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
+-dependencies = [
+- "hashbrown",
++ "syn",
+ ]
+ 
+ [[package]]
+-name = "http"
+-version = "1.5.0"
++name = "serde_json"
++version = "1.0.151"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
++checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+ dependencies = [
+- "bytes",
+  "itoa",
++ "memchr",
++ "serde",
++ "serde_core",
++ "zmij",
+ ]
+ 
+ [[package]]
+-name = "http-body"
+-version = "1.1.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
+-dependencies = [
+- "bytes",
+- "http",
+-]
+-
+-[[package]]
+-name = "http-body-util"
+-version = "0.1.5"
++name = "spirv"
++version = "0.4.0+sdk-1.4.341.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "23169fe34a5fbcdd3f3862e78fb9b6fccd5f02a6dc6f732547005d45631ce71c"
++checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
+ dependencies = [
+- "bytes",
+- "futures-core",
+- "http",
+- "http-body",
+- "pin-project-lite",
++ "bitflags",
+ ]
+ 
+ [[package]]
+-name = "httparse"
+-version = "1.10.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+-
+-[[package]]
+-name = "hyper"
+-version = "1.11.1"
++name = "syn"
++version = "3.0.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "27b501faa50e7a26c3d3560ca625132f4078a17771f4810baf70475ae48cbe43"
++checksum = "12df2e0110f65b775f769bb17ef989067a1d931b2eb822bd4346631eeada89f9"
+ dependencies = [
+- "atomic-waker",
+- "bytes",
+- "futures-channel",
+- "futures-core",
+- "http",
+- "http-body",
+- "httparse",
+- "itoa",
+- "pin-project-lite",
+- "smallvec",
+- "tokio",
+- "want",
++ "proc-macro2",
++ "quote",
++ "unicode-ident",
+ ]
+ 
+ [[package]]
+-name = "hyper-rustls"
+-version = "0.27.9"
++name = "unicode-ident"
++version = "1.0.24"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
+-dependencies = [
+- "http",
+- "hyper",
+- "hyper-util",
+- "rustls",
+- "tokio",
+- "tokio-rustls",
+- "tower-service",
+- "webpki-roots",
+-]
++checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+ 
+ [[package]]
+-name = "hyper-util"
+-version = "0.1.20"
++name = "wait-timeout"
++version = "0.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
++checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
+ dependencies = [
+- "base64",
+- "bytes",
+- "futures-channel",
+- "futures-util",
+- "http",
+- "http-body",
+- "hyper",
+- "ipnet",
+  "libc",
+- "percent-encoding",
+- "pin-project-lite",
+- "socket2",
+- "tokio",
+- "tower-service",
+- "tracing",
+-]
+-
+-[[package]]
+-name = "icu_collections"
+-version = "2.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fa68d21081c4a05d5a901a1c62add574c77048b6a1c67be3b50ce0b60d4ca513"
+-dependencies = [
+- "displaydoc",
+- "potential_utf",
+- "utf8_iter",
+- "yoke",
+- "zerofrom",
+- "zerovec",
+-]
+-
+-[[package]]
+-name = "icu_locale_core"
+-version = "2.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d56e28588da92eee5c3201a6eff33fabdd49b62269c8938d4ff050ce4d900deb"
+-dependencies = [
+- "displaydoc",
+- "litemap",
+- "tinystr",
+- "writeable",
+- "zerovec",
+-]
+-
+-[[package]]
+-name = "icu_normalizer"
+-version = "2.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "12f9cf5f235641ed274641dd81c3f28d870e276763d0797aeeab72317b1c646f"
+-dependencies = [
+- "icu_collections",
+- "icu_normalizer_data",
+- "icu_properties",
+- "icu_provider",
+- "smallvec",
+- "zerovec",
+-]
+-
+-[[package]]
+-name = "icu_normalizer_data"
+-version = "2.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1563da1ed3e0b3bf3d74c9b85917ac9c56464d2f57242270c09c9e752f8021a0"
+-
+-[[package]]
+-name = "icu_properties"
+-version = "2.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7e7ca276ad3145661a65914e6daf131ca5120cd3dcee8f8f3214b8875184a148"
+-dependencies = [
+- "displaydoc",
+- "icu_collections",
+- "icu_locale_core",
+- "icu_properties_data",
+- "icu_provider",
+- "zerotrie",
+- "zerovec",
+-]
+-
+-[[package]]
+-name = "icu_properties_data"
+-version = "2.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e590f038c1464a96894fd6d10127e90a8be4509f56ff7ecef851b15cee0b7caa"
+-
+-[[package]]
+-name = "icu_provider"
+-version = "2.3.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d27bbb9d3abbefac45d55f647c9de1d44aafcd1186eb91879afef17c396c3e73"
+-dependencies = [
+- "displaydoc",
+- "icu_locale_core",
+- "writeable",
+- "yoke",
+- "zerofrom",
+- "zerotrie",
+- "zerovec",
+-]
+-
+-[[package]]
+-name = "idna"
+-version = "1.1.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3b0875f23caa03898994f6ddc501886a45c7d3d62d04d2d90788d47be1b1e4de"
+-dependencies = [
+- "idna_adapter",
+- "smallvec",
+- "utf8_iter",
+-]
+-
+-[[package]]
+-name = "idna_adapter"
+-version = "1.2.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
+-dependencies = [
+- "icu_normalizer",
+- "icu_properties",
+-]
+-
+-[[package]]
+-name = "ipnet"
+-version = "2.12.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
+-
+-[[package]]
+-name = "itoa"
+-version = "1.0.18"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+-
+-[[package]]
+-name = "js-sys"
+-version = "0.3.105"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ce57d20d1ea864ce2ac172ab472d409214f4fd359f0b2a2775abdf522e2af99e"
+-dependencies = [
+- "cfg-if",
+- "futures-util",
+- "wasm-bindgen",
+-]
+-
+-[[package]]
+-name = "libc"
+-version = "0.2.189"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+-
+-[[package]]
+-name = "libloading"
+-version = "0.8.9"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+-dependencies = [
+- "cfg-if",
+- "windows-link",
+-]
+-
+-[[package]]
+-name = "libsqlite3-sys"
+-version = "0.30.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
+-dependencies = [
+- "cc",
+- "pkg-config",
+- "vcpkg",
+-]
+-
+-[[package]]
+-name = "litemap"
+-version = "0.8.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
+-
+-[[package]]
+-name = "log"
+-version = "0.4.34"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+-
+-[[package]]
+-name = "lru-slab"
+-version = "0.1.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
+-
+-[[package]]
+-name = "memchr"
+-version = "2.8.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+-
+-[[package]]
+-name = "metal2vulkan"
+-version = "0.1.0"
+-dependencies = [
+- "serde",
+- "serde_json",
+- "spirv",
+- "wait-timeout",
+-]
+-
+-[[package]]
+-name = "metal2vulkan-validation"
+-version = "0.1.0"
+-dependencies = [
+- "ash",
+- "base64",
+- "libc",
+- "memchr",
+- "metal2vulkan",
+- "objc2",
+- "objc2-foundation",
+- "objc2-metal",
+- "reqwest",
+- "rusqlite",
+- "schemars",
+- "serde",
+- "serde_json",
+- "sha2",
+- "wait-timeout",
+-]
+-
+-[[package]]
+-name = "mio"
+-version = "1.2.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4b18443e9c262bfe8fa82f51666e2642c53393f7e5c27b3e1aeab922cff5b9d8"
+-dependencies = [
+- "libc",
+- "wasi",
+- "windows-sys 0.61.2",
+-]
+-
+-[[package]]
+-name = "objc2"
+-version = "0.6.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f"
+-dependencies = [
+- "objc2-encode",
+-]
+-
+-[[package]]
+-name = "objc2-core-foundation"
+-version = "0.3.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+-dependencies = [
+- "bitflags",
+- "dispatch2",
+- "objc2",
+-]
+-
+-[[package]]
+-name = "objc2-encode"
+-version = "4.1.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
+-
+-[[package]]
+-name = "objc2-foundation"
+-version = "0.3.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
+-dependencies = [
+- "bitflags",
+- "block2",
+- "libc",
+- "objc2",
+- "objc2-core-foundation",
+-]
+-
+-[[package]]
+-name = "objc2-metal"
+-version = "0.3.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
+-dependencies = [
+- "bitflags",
+- "block2",
+- "dispatch2",
+- "objc2",
+- "objc2-core-foundation",
+- "objc2-foundation",
+-]
+-
+-[[package]]
+-name = "once_cell"
+-version = "1.21.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+-
+-[[package]]
+-name = "percent-encoding"
+-version = "2.3.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+-
+-[[package]]
+-name = "pin-project-lite"
+-version = "0.2.17"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+-
+-[[package]]
+-name = "pkg-config"
+-version = "0.3.34"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+-
+-[[package]]
+-name = "potential_utf"
+-version = "0.1.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661"
+-dependencies = [
+- "zerovec",
+-]
+-
+-[[package]]
+-name = "proc-macro2"
+-version = "1.0.107"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
+-dependencies = [
+- "unicode-ident",
+-]
+-
+-[[package]]
+-name = "quinn"
+-version = "0.11.12"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4051e23e9185c255a7e33ef59cdbca87a22d359052eecd22fc6b901fb37d9d11"
+-dependencies = [
+- "bytes",
+- "cfg_aliases",
+- "pin-project-lite",
+- "quinn-proto",
+- "quinn-udp",
+- "rustc-hash",
+- "rustls",
+- "socket2",
+- "thiserror",
+- "tokio",
+- "tracing",
+- "web-time",
+-]
+-
+-[[package]]
+-name = "quinn-proto"
+-version = "0.11.18"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a9746dbde176634f4f2f1faf2404e30a31b2bc1e9cafb5329c95d8177a18c9fc"
+-dependencies = [
+- "bytes",
+- "getrandom 0.4.3",
+- "lru-slab",
+- "rand",
+- "rand_pcg",
+- "ring",
+- "rustc-hash",
+- "rustls",
+- "rustls-pki-types",
+- "slab",
+- "thiserror",
+- "tinyvec",
+- "tracing",
+- "web-time",
+-]
+-
+-[[package]]
+-name = "quinn-udp"
+-version = "0.5.15"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "35a133f956daabe89a61a685c2649f13d82d5aa4bd5d12d1277e1072a21c0694"
+-dependencies = [
+- "cfg_aliases",
+- "libc",
+- "once_cell",
+- "socket2",
+- "tracing",
+- "windows-sys 0.61.2",
+-]
+-
+-[[package]]
+-name = "quote"
+-version = "1.0.47"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
+-dependencies = [
+- "proc-macro2",
+-]
+-
+-[[package]]
+-name = "r-efi"
+-version = "6.0.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+-
+-[[package]]
+-name = "rand"
+-version = "0.10.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
+-dependencies = [
+- "chacha20",
+- "getrandom 0.4.3",
+- "rand_core",
+-]
+-
+-[[package]]
+-name = "rand_core"
+-version = "0.10.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+-
+-[[package]]
+-name = "rand_pcg"
+-version = "0.10.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+-dependencies = [
+- "rand_core",
+-]
+-
+-[[package]]
+-name = "ref-cast"
+-version = "1.0.27"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+-dependencies = [
+- "ref-cast-impl",
+-]
+-
+-[[package]]
+-name = "ref-cast-impl"
+-version = "1.0.27"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 3.0.5",
+-]
+-
+-[[package]]
+-name = "reqwest"
+-version = "0.12.28"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+-dependencies = [
+- "base64",
+- "bytes",
+- "futures-channel",
+- "futures-core",
+- "futures-util",
+- "http",
+- "http-body",
+- "http-body-util",
+- "hyper",
+- "hyper-rustls",
+- "hyper-util",
+- "js-sys",
+- "log",
+- "percent-encoding",
+- "pin-project-lite",
+- "quinn",
+- "rustls",
+- "rustls-pki-types",
+- "serde",
+- "serde_json",
+- "serde_urlencoded",
+- "sync_wrapper",
+- "tokio",
+- "tokio-rustls",
+- "tower",
+- "tower-http",
+- "tower-service",
+- "url",
+- "wasm-bindgen",
+- "wasm-bindgen-futures",
+- "web-sys",
+- "webpki-roots",
+-]
+-
+-[[package]]
+-name = "ring"
+-version = "0.17.14"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
+-dependencies = [
+- "cc",
+- "cfg-if",
+- "getrandom 0.2.17",
+- "libc",
+- "untrusted",
+- "windows-sys 0.52.0",
+-]
+-
+-[[package]]
+-name = "rusqlite"
+-version = "0.32.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
+-dependencies = [
+- "bitflags",
+- "fallible-iterator",
+- "fallible-streaming-iterator",
+- "hashlink",
+- "libsqlite3-sys",
+- "smallvec",
+-]
+-
+-[[package]]
+-name = "rustc-hash"
+-version = "2.1.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
+-
+-[[package]]
+-name = "rustls"
+-version = "0.23.45"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+-dependencies = [
+- "once_cell",
+- "ring",
+- "rustls-pki-types",
+- "rustls-webpki",
+- "subtle",
+- "zeroize",
+-]
+-
+-[[package]]
+-name = "rustls-pki-types"
+-version = "1.15.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
+-dependencies = [
+- "web-time",
+- "zeroize",
+-]
+-
+-[[package]]
+-name = "rustls-webpki"
+-version = "0.103.15"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+-dependencies = [
+- "ring",
+- "rustls-pki-types",
+- "untrusted",
+-]
+-
+-[[package]]
+-name = "rustversion"
+-version = "1.0.23"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+-
+-[[package]]
+-name = "ryu"
+-version = "1.0.23"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+-
+-[[package]]
+-name = "schemars"
+-version = "1.2.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
+-dependencies = [
+- "dyn-clone",
+- "ref-cast",
+- "schemars_derive",
+- "serde",
+- "serde_json",
+-]
+-
+-[[package]]
+-name = "schemars_derive"
+-version = "1.2.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "serde_derive_internals",
+- "syn 3.0.5",
+-]
+-
+-[[package]]
+-name = "serde"
+-version = "1.0.229"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
+-dependencies = [
+- "serde_core",
+- "serde_derive",
+-]
+-
+-[[package]]
+-name = "serde_core"
+-version = "1.0.229"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48"
+-dependencies = [
+- "serde_derive",
+-]
+-
+-[[package]]
+-name = "serde_derive"
+-version = "1.0.229"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 3.0.5",
+-]
+-
+-[[package]]
+-name = "serde_derive_internals"
+-version = "0.30.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 3.0.5",
+-]
+-
+-[[package]]
+-name = "serde_json"
+-version = "1.0.151"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+-dependencies = [
+- "itoa",
+- "memchr",
+- "serde",
+- "serde_core",
+- "zmij",
+-]
+-
+-[[package]]
+-name = "serde_urlencoded"
+-version = "0.7.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+-dependencies = [
+- "form_urlencoded",
+- "itoa",
+- "ryu",
+- "serde",
+-]
+-
+-[[package]]
+-name = "sha2"
+-version = "0.10.9"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+-dependencies = [
+- "cfg-if",
+- "cpufeatures 0.2.17",
+- "digest",
+-]
+-
+-[[package]]
+-name = "shlex"
+-version = "2.0.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+-
+-[[package]]
+-name = "slab"
+-version = "0.4.12"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+-
+-[[package]]
+-name = "smallvec"
+-version = "1.16.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
+-
+-[[package]]
+-name = "socket2"
+-version = "0.6.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+-dependencies = [
+- "libc",
+- "windows-sys 0.61.2",
+-]
+-
+-[[package]]
+-name = "spirv"
+-version = "0.4.0+sdk-1.4.341.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
+-dependencies = [
+- "bitflags",
+-]
+-
+-[[package]]
+-name = "stable_deref_trait"
+-version = "1.2.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+-
+-[[package]]
+-name = "subtle"
+-version = "2.6.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+-
+-[[package]]
+-name = "syn"
+-version = "2.0.119"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "unicode-ident",
+-]
+-
+-[[package]]
+-name = "syn"
+-version = "3.0.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "12df2e0110f65b775f769bb17ef989067a1d931b2eb822bd4346631eeada89f9"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "unicode-ident",
+-]
+-
+-[[package]]
+-name = "sync_wrapper"
+-version = "1.0.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
+-dependencies = [
+- "futures-core",
+-]
+-
+-[[package]]
+-name = "synstructure"
+-version = "0.13.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 2.0.119",
+-]
+-
+-[[package]]
+-name = "thiserror"
+-version = "2.0.20"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
+-dependencies = [
+- "thiserror-impl",
+-]
+-
+-[[package]]
+-name = "thiserror-impl"
+-version = "2.0.20"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 3.0.5",
+-]
+-
+-[[package]]
+-name = "tinystr"
+-version = "0.8.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b1e27c91459209c2986af3dcf603a5a74a4368754ce37414f59acc971167f643"
+-dependencies = [
+- "displaydoc",
+- "zerovec",
+-]
+-
+-[[package]]
+-name = "tinyvec"
+-version = "1.13.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+-
+-[[package]]
+-name = "tokio"
+-version = "1.53.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+-dependencies = [
+- "bytes",
+- "libc",
+- "mio",
+- "pin-project-lite",
+- "socket2",
+- "windows-sys 0.61.2",
+-]
+-
+-[[package]]
+-name = "tokio-rustls"
+-version = "0.26.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67"
+-dependencies = [
+- "rustls",
+- "tokio",
+-]
+-
+-[[package]]
+-name = "tower"
+-version = "0.5.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ebe5ef63511595f1344e2d5cfa636d973292adc0eec1f0ad45fae9f0851ab1d4"
+-dependencies = [
+- "futures-core",
+- "futures-util",
+- "pin-project-lite",
+- "sync_wrapper",
+- "tokio",
+- "tower-layer",
+- "tower-service",
+-]
+-
+-[[package]]
+-name = "tower-http"
+-version = "0.6.11"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
+-dependencies = [
+- "bitflags",
+- "bytes",
+- "futures-util",
+- "http",
+- "http-body",
+- "pin-project-lite",
+- "tower",
+- "tower-layer",
+- "tower-service",
+- "url",
+-]
+-
+-[[package]]
+-name = "tower-layer"
+-version = "0.3.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
+-
+-[[package]]
+-name = "tower-service"
+-version = "0.3.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+-
+-[[package]]
+-name = "tracing"
+-version = "0.1.44"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
+-dependencies = [
+- "pin-project-lite",
+- "tracing-core",
+-]
+-
+-[[package]]
+-name = "tracing-core"
+-version = "0.1.36"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
+-dependencies = [
+- "once_cell",
+-]
+-
+-[[package]]
+-name = "try-lock"
+-version = "0.2.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+-
+-[[package]]
+-name = "typenum"
+-version = "1.20.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+-
+-[[package]]
+-name = "unicode-ident"
+-version = "1.0.24"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+-
+-[[package]]
+-name = "untrusted"
+-version = "0.9.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+-
+-[[package]]
+-name = "url"
+-version = "2.5.8"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+-dependencies = [
+- "form_urlencoded",
+- "idna",
+- "percent-encoding",
+- "serde",
+-]
+-
+-[[package]]
+-name = "utf8_iter"
+-version = "1.0.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
+-
+-[[package]]
+-name = "vcpkg"
+-version = "0.2.15"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+-
+-[[package]]
+-name = "version_check"
+-version = "0.9.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+-
+-[[package]]
+-name = "wait-timeout"
+-version = "0.2.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
+-dependencies = [
+- "libc",
+-]
+-
+-[[package]]
+-name = "want"
+-version = "0.3.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
+-dependencies = [
+- "try-lock",
+-]
+-
+-[[package]]
+-name = "wasi"
+-version = "0.11.1+wasi-snapshot-preview1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
+-
+-[[package]]
+-name = "wasm-bindgen"
+-version = "0.2.128"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "aecb87a33d3b0c5e3b7aa46336eaf486cffafbd281b195e4c8b80d50df2351bf"
+-dependencies = [
+- "cfg-if",
+- "once_cell",
+- "rustversion",
+- "wasm-bindgen-macro",
+- "wasm-bindgen-shared",
+-]
+-
+-[[package]]
+-name = "wasm-bindgen-futures"
+-version = "0.4.78"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6ef4c5d3d2cdf5c54f4231181768f5510842e350db025faf1f7163b1030ed928"
+-dependencies = [
+- "js-sys",
+- "wasm-bindgen",
+-]
+-
+-[[package]]
+-name = "wasm-bindgen-macro"
+-version = "0.2.128"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a690d511e3c1a8b3a55e33511e3c2c00c78415cd23650f32b808627f5696b9ed"
+-dependencies = [
+- "quote",
+- "wasm-bindgen-macro-support",
+-]
+-
+-[[package]]
+-name = "wasm-bindgen-macro-support"
+-version = "0.2.128"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "411e4887f0071ef2d2164a9d5fdf2d20efbef78fccd3a78b0c10a1dc5295e48a"
+-dependencies = [
+- "bumpalo",
+- "proc-macro2",
+- "quote",
+- "syn 3.0.5",
+- "wasm-bindgen-shared",
+-]
+-
+-[[package]]
+-name = "wasm-bindgen-shared"
+-version = "0.2.128"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
+-dependencies = [
+- "unicode-ident",
+-]
+-
+-[[package]]
+-name = "web-sys"
+-version = "0.3.105"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9fbddc4a036f00ec4f18c83445bd3115cb306a91da554919a099d9222fe4a7f8"
+-dependencies = [
+- "js-sys",
+- "wasm-bindgen",
+-]
+-
+-[[package]]
+-name = "web-time"
+-version = "1.1.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
+-dependencies = [
+- "js-sys",
+- "wasm-bindgen",
+-]
+-
+-[[package]]
+-name = "webpki-roots"
+-version = "1.0.9"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+-dependencies = [
+- "rustls-pki-types",
+-]
+-
+-[[package]]
+-name = "windows-link"
+-version = "0.2.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+-
+-[[package]]
+-name = "windows-sys"
+-version = "0.52.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+-dependencies = [
+- "windows-targets",
+-]
+-
+-[[package]]
+-name = "windows-sys"
+-version = "0.61.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+-dependencies = [
+- "windows-link",
+-]
+-
+-[[package]]
+-name = "windows-targets"
+-version = "0.52.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973"
+-dependencies = [
+- "windows_aarch64_gnullvm",
+- "windows_aarch64_msvc",
+- "windows_i686_gnu",
+- "windows_i686_gnullvm",
+- "windows_i686_msvc",
+- "windows_x86_64_gnu",
+- "windows_x86_64_gnullvm",
+- "windows_x86_64_msvc",
+-]
+-
+-[[package]]
+-name = "windows_aarch64_gnullvm"
+-version = "0.52.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3"
+-
+-[[package]]
+-name = "windows_aarch64_msvc"
+-version = "0.52.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469"
+-
+-[[package]]
+-name = "windows_i686_gnu"
+-version = "0.52.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8e9b5ad5ab802e97eb8e295ac6720e509ee4c243f69d781394014ebfe8bbfa0b"
+-
+-[[package]]
+-name = "windows_i686_gnullvm"
+-version = "0.52.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66"
+-
+-[[package]]
+-name = "windows_i686_msvc"
+-version = "0.52.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
+-
+-[[package]]
+-name = "windows_x86_64_gnu"
+-version = "0.52.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78"
+-
+-[[package]]
+-name = "windows_x86_64_gnullvm"
+-version = "0.52.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d"
+-
+-[[package]]
+-name = "windows_x86_64_msvc"
+-version = "0.52.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+-
+-[[package]]
+-name = "writeable"
+-version = "0.6.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+-
+-[[package]]
+-name = "yoke"
+-version = "0.8.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "709fe23a0424b6a435d82152b1bd3fdfb0833487d5fa90d05d42762a9891fef5"
+-dependencies = [
+- "stable_deref_trait",
+- "yoke-derive",
+- "zerofrom",
+-]
+-
+-[[package]]
+-name = "yoke-derive"
+-version = "0.8.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 2.0.119",
+- "synstructure",
+-]
+-
+-[[package]]
+-name = "zerocopy"
+-version = "0.8.57"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d35102a9f36d089ccae9e4c6802bc118be4487b80aaffc0ab4e0cf5ce92d2873"
+-dependencies = [
+- "zerocopy-derive",
+-]
+-
+-[[package]]
+-name = "zerocopy-derive"
+-version = "0.8.57"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "146c01f5ab44258da43cf276c74a2763db2ff3969c9c652c3f2de07041d0b2bc"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 2.0.119",
+-]
+-
+-[[package]]
+-name = "zerofrom"
+-version = "0.1.8"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272"
+-dependencies = [
+- "zerofrom-derive",
+-]
+-
+-[[package]]
+-name = "zerofrom-derive"
+-version = "0.1.7"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 2.0.119",
+- "synstructure",
+-]
+-
+-[[package]]
+-name = "zeroize"
+-version = "1.9.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+-
+-[[package]]
+-name = "zerotrie"
+-version = "0.2.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4ea269c3bd32f0a32c321907a2ae912ba6f4649bb0fc764a15627e99a7095a3f"
+-dependencies = [
+- "displaydoc",
+- "yoke",
+- "zerofrom",
+-]
+-
+-[[package]]
+-name = "zerovec"
+-version = "0.11.8"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "bb0464e17806c1d976d5cba29399c7f08e516e279e2ba493f63123b5fca67dd8"
+-dependencies = [
+- "yoke",
+- "zerofrom",
+- "zerovec-derive",
+-]
+-
+-[[package]]
+-name = "zerovec-derive"
+-version = "0.11.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 3.0.5",
+ ]
+ 
+ [[package]]
+diff --git a/translator/translator/src/native/tests/textures.rs b/translator/translator/src/native/tests/textures.rs
+index da75108..0d7a71c 100644
+--- a/translator/translator/src/native/tests/textures.rs
++++ b/translator/translator/src/native/tests/textures.rs
+@@ -3198,9 +3198,11 @@ declare i32 @air.get_num_samples.i32(i32)
+         std::process::id()
+     ));
+     let _ = std::fs::create_dir_all(&tmp);
+-    let error = crate::translate_sanitized_native(ll, Stage::Fragment, &tmp)
+-        .expect_err("unknown pipeline state must remain unsupported");
+-    assert!(error.contains("raster_sample_count"), "{error}");
++    let spv = crate::translate_sanitized_native(ll, Stage::Fragment, &tmp)
++        .expect("unknown pipeline state becomes a specialization constant");
++    let asm = disassemble(&spv).expect("disassemble");
++    assert!(!asm.contains("air.get_num_samples.i32"), "{asm}");
++    assert!(asm.contains("OpSpecConstant") && asm.contains(&format!("SpecId {}", crate::reflect::RASTER_SAMPLE_COUNT_SPEC_ID)), "{asm}");
+ 
+     let options = crate::passes::TransformOptions {
+         raster_sample_count: Some(4),
+diff --git a/translator/translator/src/passes/air_calls/dispatch_texture.rs b/translator/translator/src/passes/air_calls/dispatch_texture.rs
+index 744aa7a..77c0890 100644
+--- a/translator/translator/src/passes/air_calls/dispatch_texture.rs
++++ b/translator/translator/src/passes/air_calls/dispatch_texture.rs
+@@ -1480,17 +1480,17 @@ pub(in crate::passes) fn lower_raster_sample_count(
+     if ctx.stage != Stage::Fragment {
+         return Err(format!("{name} requires fragment stage"));
+     }
+-    let samples = ctx.raster_sample_count.ok_or_else(|| {
+-        format!(
+-            "{name} requires TransformOptions::raster_sample_count to match the graphics pipeline"
+-        )
+-    })?;
++    let uint = ctx.ty_uint();
++    let Some(samples) = ctx.raster_sample_count else {
++        // Unknown at translation time: the pipeline specializes it (RASTER_SAMPLE_COUNT_SPEC_ID).
++        let value = ctx.raster_sample_count_spec_id();
++        return Ok(vec![copy_or_bitcast_result(rty, res, uint, value)]);
++    };
+     if !matches!(samples, 1 | 2 | 4 | 8 | 16 | 32 | 64) {
+         return Err(format!(
+             "{name} raster sample count {samples} is not a Vulkan sample-count value"
+         ));
+     }
+-    let uint = ctx.ty_uint();
+     let value = ctx.const_uint(samples);
+     Ok(vec![copy_or_bitcast_result(rty, res, uint, value)])
+ }
+diff --git a/translator/translator/src/passes/mod.rs b/translator/translator/src/passes/mod.rs
+index e64cf05..44ad194 100644
+--- a/translator/translator/src/passes/mod.rs
++++ b/translator/translator/src/passes/mod.rs
+@@ -299,6 +299,8 @@ struct Ctx {
+     image_multisampled: HashSet<Word>,
+     image_storage: HashSet<Word>,
+     image_array_vars: HashMap<Word, (Word, (Dim, bool), ImageComp, bool)>,
++    sampler_array_vars: HashSet<Word>,
++    array_element_ptrs: HashMap<Word, (Word, Word)>,
+     bindless_heap_vars: HashMap<Word, Word>,
+     address_table: Option<(Word, Word, Option<Word>)>,
+     bound_buffer_vars: HashSet<Word>,
+@@ -312,6 +314,7 @@ struct Ctx {
+     kernel_workgroup_size_id: Option<Word>,
+     kernel_dispatch: crate::reflect::KernelDispatch,
+     raster_sample_count: Option<u32>,
++    raster_sample_count_spec: Option<Word>,
+     vertex_amplification_count: u32,
+     runtime_sampler_states: [Option<RuntimeSamplerState>; SAMPLER_ARGUMENT_COUNT_USIZE],
+     runtime_storage_image_states: [Option<RuntimeStorageImageState>; TEXTURE_ARGUMENT_COUNT_USIZE],
+@@ -385,6 +388,8 @@ impl Ctx {
+             image_multisampled: HashSet::new(),
+             image_storage: HashSet::new(),
+             image_array_vars: HashMap::new(),
++            sampler_array_vars: HashSet::new(),
++            array_element_ptrs: HashMap::new(),
+             bindless_heap_vars: HashMap::new(),
+             address_table: None,
+             bound_buffer_vars: HashSet::new(),
+@@ -400,6 +405,7 @@ impl Ctx {
+                 .kernel_dispatch
+                 .unwrap_or_else(crate::reflect::KernelDispatch::safe_default),
+             raster_sample_count: options.raster_sample_count,
++            raster_sample_count_spec: None,
+             vertex_amplification_count: options.vertex_amplification_count,
+             runtime_sampler_states: options.runtime_sampler_states,
+             runtime_storage_image_states: options.runtime_storage_image_states,
+@@ -1289,6 +1295,34 @@ impl Ctx {
+         ids
+     }
+ 
++    /// The raster sample count as a specialization constant (default 1), for shaders translated before the
++    /// pipeline is known; see `crate::reflect::RASTER_SAMPLE_COUNT_SPEC_ID`.
++    pub(in crate::passes) fn raster_sample_count_spec_id(&mut self) -> Word {
++        if let Some(id) = self.raster_sample_count_spec {
++            return id;
++        }
++        let uint_ty = self.ty_uint();
++        let id = self.module.fresh_id();
++        self.new_globals.push(Instruction::new(
++            Op::SpecConstant,
++            Some(uint_ty),
++            Some(id),
++            vec![Operand::LiteralBit32(1)],
++        ));
++        self.module.annotations.push(Instruction::new(
++            Op::Decorate,
++            None,
++            None,
++            vec![
++                Operand::IdRef(id),
++                Operand::Decoration(Decoration::SpecId),
++                Operand::LiteralBit32(crate::reflect::RASTER_SAMPLE_COUNT_SPEC_ID),
++            ],
++        ));
++        self.raster_sample_count_spec = Some(id);
++        id
++    }
++
+     fn kernel_workgroup_size_id(&mut self) -> Word {
+         if let Some(id) = self.kernel_workgroup_size_id {
+             return id;
+diff --git a/translator/translator/src/passes/resources/collapse.rs b/translator/translator/src/passes/resources/collapse.rs
+index abeba18..3beaa61 100644
+--- a/translator/translator/src/passes/resources/collapse.rs
++++ b/translator/translator/src/passes/resources/collapse.rs
+@@ -795,6 +795,18 @@ pub(in crate::passes) fn apply_bindings(
+                 if let Some((metal_index, state)) = runtime_specialization {
+                     ctx.register_runtime_storage_image_value(var, metal_index, Some(state));
+                 }
++                record_array_element_pointers(ctx, entry_idx, pid, var);
++                remove_dead_local_image_array_memcpy(ctx, entry_idx, pid);
++                resource_values.insert(var);
++                splices.push((pid, var));
++            }
++            ParamBinding::SamplerArray { var, elem_ty } => {
++                // Samplers share the image-array machinery: the element is picked out of the
++                // descriptor array exactly like a texture handle, only its type differs.
++                ctx.image_array_vars
++                    .insert(var, (elem_ty, (Dim::Dim2D, false), ImageComp::Float, false));
++                ctx.sampler_array_vars.insert(var);
++                record_array_element_pointers(ctx, entry_idx, pid, var);
+                 remove_dead_local_image_array_memcpy(ctx, entry_idx, pid);
+                 resource_values.insert(var);
+                 splices.push((pid, var));
+@@ -1061,6 +1073,31 @@ pub(in crate::passes) fn apply_bindings(
+     Ok(())
+ }
+ 
++/// Remember which element of a descriptor array each `&param[k]` chain addresses, before the
++/// chains are retired as dead: the element pointers only reach their consumers through memory
++/// (ANGLE keeps `thread T *texture` in a local struct), where the sidecar facts name them by id.
++fn record_array_element_pointers(ctx: &mut Ctx, entry_idx: usize, param: Word, var: Word) {
++    let mut found = Vec::new();
++    for block in &ctx.module.functions[entry_idx].blocks {
++        for instruction in &block.instructions {
++            if !matches!(
++                instruction.class.opcode,
++                Op::AccessChain | Op::InBoundsAccessChain
++            ) {
++                continue;
++            }
++            if let (Some(result), [Operand::IdRef(base), Operand::IdRef(index)]) =
++                (instruction.result_id, instruction.operands.as_slice())
++            {
++                if *base == param {
++                    found.push((result, (var, *index)));
++                }
++            }
++        }
++    }
++    ctx.array_element_ptrs.extend(found);
++}
++
+ fn remove_dead_local_image_array_memcpy(ctx: &mut Ctx, entry_idx: usize, param: Word) {
+     let memcpy_ids = ctx
+         .module
+diff --git a/translator/translator/src/passes/resources/texture_array.rs b/translator/translator/src/passes/resources/texture_array.rs
+index 95a5ffa..8027372 100644
+--- a/translator/translator/src/passes/resources/texture_array.rs
++++ b/translator/translator/src/passes/resources/texture_array.rs
+@@ -59,6 +59,37 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             alias = *source;
+         }
+     }
++    // A handle reached through a pointer to an array element, e.g. ANGLE's `thread T *texture`
++    // in its texture-environment struct: the load of the element's value has the element pointer
++    // as its root and no further field.
++    let stored_arrays = stored_array_pointer_fields(ctx, entry_idx);
++    for fact in ctx.emit_sidecar.local_pointer_field_loads.clone() {
++        if fixed_handles.contains_key(&fact.id)
++            || ctx.image_array_vars.contains_key(&fact.root)
++            || !(fact.indices.is_empty() || fact.indices.as_slice() == [0])
++        {
++            continue;
++        }
++        if let Some(resolved) = resolve_array_element(ctx, &defs, fact.root) {
++            fixed_handles.insert(fact.id, resolved);
++            continue;
++        }
++        // The pointer to element 0 is the array parameter itself, which is stored into the
++        // struct as a plain pointer and so leaves no store fact behind: look it up by field key.
++        let outer = ctx
++            .emit_sidecar
++            .local_pointer_field_loads
++            .iter()
++            .find(|outer| outer.id == fact.root)
++            .map(|outer| (outer.root, trim_zero_indices(&outer.indices)));
++        if let Some((arrayvar, element)) = outer.and_then(|key| stored_arrays.get(&key).copied()) {
++            let element = match element {
++                Some(element) => element,
++                None => ctx.const_uint(0),
++            };
++            fixed_handles.insert(fact.id, (arrayvar, element));
++        }
++    }
+     let mut local_table_handles = HashMap::new();
+     for fact in &ctx.emit_sidecar.local_pointer_dynamic_field_loads {
+         let resolved = local_table_array_elements(ctx, &defs, fact, &fixed_handles);
+@@ -124,9 +155,35 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             if !is_texture_intrinsic(name) {
+                 continue;
+             }
+-            let Some(Operand::IdRef(handle)) = inst.operands.get(1) else {
++            // Operand 1 is the texture handle; operand 2 is the sampler handle of a sample/gather call.
++            for pos in [1usize, 2] {
++            let Some(Operand::IdRef(handle)) = inst.operands.get(pos) else {
+                 continue;
+             };
++            {
++                let mut probe = *handle;
++                for _ in 0..8 {
++                    let Some(source) = defs
++                        .get(&probe)
++                        .filter(|def| def.class.opcode == Op::CopyObject)
++                        .and_then(|def| match def.operands.first() {
++                            Some(Operand::IdRef(source)) => Some(*source),
++                            _ => None,
++                        })
++                    else {
++                        break;
++                    };
++                    probe = source;
++                    if let Some(resolved) = fixed_handles.get(&probe).copied() {
++                        fixed_handles.entry(*handle).or_insert(resolved);
++                        break;
++                    }
++                    if let Some(resolved) = dynamic_handles.get(&probe).copied() {
++                        dynamic_handles.entry(*handle).or_insert(resolved);
++                        break;
++                    }
++                }
++            }
+             if let Some(&slot) = device_texture_slots.get(handle) {
+                 device_candidates.push((*handle, slot, name.to_string()));
+                 seen.insert(*handle);
+@@ -161,6 +218,7 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+                 continue;
+             };
+             candidates.push((*handle, *ptr));
++            }
+         }
+     }
+     for (handle, ptr) in candidates {
+@@ -261,6 +319,7 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+         }
+         let &(elem_image_ty, dim, comp, multisampled) =
+             ctx.image_array_vars.get(&arrayvar).unwrap();
++        let is_sampler = ctx.sampler_array_vars.contains(&arrayvar);
+         let ptr_image = ctx.ty_ptr(StorageClass::UniformConstant, elem_image_ty);
+         let p = ctx.module.fresh_id();
+         new_access_chains.insert(
+@@ -273,12 +332,14 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             ),
+         );
+         retyped_load_ptr.insert(handle, (elem_image_ty, p));
+-        ctx.image_dims.insert(handle, dim);
+-        ctx.image_comp.insert(handle, comp);
+-        if multisampled {
+-            ctx.image_multisampled.insert(handle);
++        if !is_sampler {
++            ctx.image_dims.insert(handle, dim);
++            ctx.image_comp.insert(handle, comp);
++            if multisampled {
++                ctx.image_multisampled.insert(handle);
++            }
+         }
+-        if image_type_is_storage(ctx, elem_image_ty) {
++        if !is_sampler && image_type_is_storage(ctx, elem_image_ty) {
+             ctx.image_storage.insert(handle);
+             if let Some((metal_index, state)) =
+                 ctx.runtime_storage_image_values.get(&arrayvar).copied()
+@@ -296,7 +357,7 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+     }
+     dead_roots.extend(handle_order.iter().map(|handle| handles[handle].0));
+ 
+-    let mut placeholder_uses: HashMap<(usize, usize), (Instruction, Instruction, Word)> =
++    let mut placeholder_uses: HashMap<(usize, usize), Vec<(usize, Instruction, Instruction, Word)>> =
+         HashMap::new();
+     let mut placeholder_specs = Vec::new();
+     for (block_idx, block) in ctx.module.functions[entry_idx].blocks.iter().enumerate() {
+@@ -304,20 +365,23 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             if inst.class.opcode != Op::FunctionCall {
+                 continue;
+             }
+-            let Some(Operand::IdRef(handle)) = inst.operands.get(1) else {
+-                continue;
+-            };
+-            let Some(&(arrayvar, idx)) = handles.get(handle) else {
+-                continue;
+-            };
+-            if defs.contains_key(handle) {
+-                continue;
++            for pos in [1usize, 2] {
++                let Some(Operand::IdRef(handle)) = inst.operands.get(pos) else {
++                    continue;
++                };
++                let Some(&(arrayvar, idx)) = handles.get(handle) else {
++                    continue;
++                };
++                if defs.contains_key(handle) {
++                    continue;
++                }
++                placeholder_specs.push((block_idx, inst_idx, pos, arrayvar, idx));
+             }
+-            placeholder_specs.push((block_idx, inst_idx, arrayvar, idx));
+         }
+     }
+-    for (block_idx, inst_idx, arrayvar, idx) in placeholder_specs {
++    for (block_idx, inst_idx, pos, arrayvar, idx) in placeholder_specs {
+         let &(image_ty, dim, comp, multisampled) = ctx.image_array_vars.get(&arrayvar).unwrap();
++        let is_sampler = ctx.sampler_array_vars.contains(&arrayvar);
+         let ptr_image = ctx.ty_ptr(StorageClass::UniformConstant, image_ty);
+         let pointer = ctx.module.fresh_id();
+         let image = ctx.module.fresh_id();
+@@ -333,20 +397,25 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             Some(image),
+             vec![Operand::IdRef(pointer)],
+         );
+-        ctx.image_dims.insert(image, dim);
+-        ctx.image_comp.insert(image, comp);
+-        if multisampled {
+-            ctx.image_multisampled.insert(image);
+-        }
+-        if image_type_is_storage(ctx, image_ty) {
+-            ctx.image_storage.insert(image);
+-            if let Some((metal_index, state)) =
+-                ctx.runtime_storage_image_values.get(&arrayvar).copied()
+-            {
+-                ctx.register_runtime_storage_image_value(image, metal_index, Some(state));
++        if !is_sampler {
++            ctx.image_dims.insert(image, dim);
++            ctx.image_comp.insert(image, comp);
++            if multisampled {
++                ctx.image_multisampled.insert(image);
++            }
++            if image_type_is_storage(ctx, image_ty) {
++                ctx.image_storage.insert(image);
++                if let Some((metal_index, state)) =
++                    ctx.runtime_storage_image_values.get(&arrayvar).copied()
++                {
++                    ctx.register_runtime_storage_image_value(image, metal_index, Some(state));
++                }
+             }
+         }
+-        placeholder_uses.insert((block_idx, inst_idx), (chain, load, image));
++        placeholder_uses
++            .entry((block_idx, inst_idx))
++            .or_default()
++            .push((pos, chain, load, image));
+     }
+ 
+     let func = &mut ctx.module.functions[entry_idx];
+@@ -354,11 +423,13 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+         let mut rebuilt: Vec<Instruction> =
+             Vec::with_capacity(blk.instructions.len() + handles.len());
+         for (inst_idx, inst) in blk.instructions.clone().into_iter().enumerate() {
+-            if let Some((chain, load, image)) = placeholder_uses.remove(&(block_idx, inst_idx)) {
+-                rebuilt.push(chain);
+-                rebuilt.push(load);
++            if let Some(uses) = placeholder_uses.remove(&(block_idx, inst_idx)) {
+                 let mut call = inst;
+-                call.operands[1] = Operand::IdRef(image);
++                for (pos, chain, load, image) in uses {
++                    rebuilt.push(chain);
++                    rebuilt.push(load);
++                    call.operands[pos] = Operand::IdRef(image);
++                }
+                 rebuilt.push(call);
+                 continue;
+             }
+@@ -492,6 +563,55 @@ pub(crate) fn sink_loop_header_texture_array_loads(ctx: &mut Ctx, entry_idx: usi
+     }
+ }
+ 
++/// Trailing zero indices address the same bytes as their prefix, and the emitter folds such
++/// all-zero GEPs away, so the store of element 0 and the load of its first field differ only there.
++fn trim_zero_indices(indices: &[u32]) -> Vec<u32> {
++    let end = indices.iter().rposition(|&index| index != 0).map_or(0, |at| at + 1);
++    indices[..end].to_vec()
++}
++
++/// Local struct fields that hold a pointer into a descriptor array (the array itself, i.e. element 0,
++/// or `&array[k]`), keyed like the sidecar's pointer-field facts. The element is `None` for element 0.
++/// Those stores leave no sidecar fact when the stored pointer needs no placeholder, or when the
++/// store's address is the struct pointer itself rather than a GEP to its first field.
++fn stored_array_pointer_fields(
++    ctx: &Ctx,
++    entry_idx: usize,
++) -> HashMap<(Word, Vec<u32>), (Word, Option<Word>)> {
++    use crate::passes::access::local_pointer_field_access_key;
++    let mut access_keys = HashMap::new();
++    let mut stored = HashMap::new();
++    for block in &ctx.module.functions[entry_idx].blocks {
++        for inst in &block.instructions {
++            if let Some((result, key)) = local_pointer_field_access_key(ctx, &access_keys, inst) {
++                access_keys.insert(result, key);
++            }
++            if inst.class.opcode != Op::Store {
++                continue;
++            }
++            let (Some(Operand::IdRef(ptr)), Some(Operand::IdRef(value))) =
++                (inst.operands.first(), inst.operands.get(1))
++            else {
++                continue;
++            };
++            let Some(key) = access_keys.get(ptr) else {
++                continue;
++            };
++            let target = if ctx.image_array_vars.contains_key(value) {
++                Some((*value, None))
++            } else {
++                ctx.array_element_ptrs
++                    .get(value)
++                    .map(|&(arrayvar, element)| (arrayvar, Some(element)))
++            };
++            if let Some(target) = target {
++                stored.insert((key.root, trim_zero_indices(&key.indices)), target);
++            }
++        }
++    }
++    stored
++}
++
+ fn is_texture_intrinsic(name: &str) -> bool {
+     name.starts_with("air.sample_texture")
+         || name.starts_with("air.sample_depth")
+@@ -662,6 +782,9 @@ fn resolve_array_element(
+         let zero = ctx.const_uint(0);
+         return Some((ptr, zero));
+     }
++    if let Some(&resolved) = ctx.array_element_ptrs.get(&ptr) {
++        return Some(resolved);
++    }
+     let inst = defs.get(&ptr)?;
+     match inst.class.opcode {
+         Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain => {
+diff --git a/translator/translator/src/passes/stage_input/mod.rs b/translator/translator/src/passes/stage_input/mod.rs
+index 86a51da..8c43be0 100644
+--- a/translator/translator/src/passes/stage_input/mod.rs
++++ b/translator/translator/src/passes/stage_input/mod.rs
+@@ -220,6 +220,7 @@ pub(in crate::passes) enum ParamBinding {
+         var: Word,
+         specialized_state: Option<StaticSamplerState>,
+     },
++    SamplerArray { var: Word, elem_ty: Word },
+     Buffer { var: Word, wrap: BufWrap },
+     StageInput {
+         var: Word,
+@@ -265,11 +266,8 @@ fn declared_descriptor_counts(
+             ),
+         };
+         if is_sampler {
+-            return Err(format!(
+-                "entry parameter {idx} is an array of {count} samplers, which this translator has \
+-                 no descriptor-array lowering for; emitting the module would sample with a \
+-                 synthesized default sampler instead of the one the shader selected"
+-            ));
++            // A sampler array is lowered to a descriptor array (ParamBinding::SamplerArray).
++            continue;
+         }
+         let texture_type_name = match stage {
+             Stage::Fragment => frag.and_then(|m| m.texture_type_name(idx)),
+@@ -862,6 +860,34 @@ pub(super) fn build_stage_input(
+                     param_ty: *pty,
+                 },
+             ));
++        } else if role_is("sampler")
++            && match stage {
++                Stage::Fragment => frag.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Vertex => vert.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Kernel => kern.and_then(|m| m.declared_descriptor_count(idx)),
++            }
++            .is_some_and(|count| count > 1)
++        {
++            let count = match stage {
++                Stage::Fragment => frag.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Vertex => vert.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Kernel => kern.and_then(|m| m.declared_descriptor_count(idx)),
++            }
++            .ok_or("sampler array has no declared descriptor count")?;
++            let elem_ty = ctx.ty_sampler();
++            let array_ty = ctx.ty_array(elem_ty, count);
++            let pptr = ctx.ty_ptr(StorageClass::UniformConstant, array_ty);
++            let var = ctx.module.fresh_id();
++            ctx.new_globals.push(Instruction::new(
++                Op::Variable,
++                Some(pptr),
++                Some(var),
++                vec![Operand::StorageClass(StorageClass::UniformConstant)],
++            ));
++            let binding = required_resource_binding(*pid, resource_binding)?;
++            decorate_binding(&mut ctx.module, var, descriptor_layout.set, binding);
++            ctx.interface_buffer_var(var);
++            bindings.push((*pid, ParamBinding::SamplerArray { var, elem_ty }));
+         } else if role_is("sampler") {
+             let sty = ctx.ty_sampler();
+             let pptr = ctx.ty_ptr(StorageClass::UniformConstant, sty);
+diff --git a/translator/translator/src/passes/stage_output/mod.rs b/translator/translator/src/passes/stage_output/mod.rs
+index 0115166..423a4c0 100644
+--- a/translator/translator/src/passes/stage_output/mod.rs
++++ b/translator/translator/src/passes/stage_output/mod.rs
+@@ -672,7 +672,10 @@ pub(in crate::passes) fn rewrite_return(
+     }
+ 
+     let mut outputs: Vec<OutputWrite> = vec![];
+-    let rdef = defs.get(&ret_ty).cloned();
++    // The snapshot predates any type a pass minted for this entry's return value; a miss here used to skip every output silently.
++    // LOCAL-FIX (Hackintosh): DO NOT REVERT to `defs.get(&ret_ty)` alone. The snapshot predates types minted by earlier passes; a miss used to
++    // drop EVERY vertex output silently (Skia Graphite/Dawn: black backgrounds + flicker). See git log, branch local-mods.
++    let rdef = defs.get(&ret_ty).cloned().or_else(|| type_def_of(ctx, ret_ty));
+ 
+     let unmodelled = match stage {
+         Stage::Fragment => frag.map(|meta| meta.unmodelled_output_members.as_slice()),
+diff --git a/translator/translator/src/reflect/mod.rs b/translator/translator/src/reflect/mod.rs
+index 4c559ae..9e597a1 100644
+--- a/translator/translator/src/reflect/mod.rs
++++ b/translator/translator/src/reflect/mod.rs
+@@ -20,6 +20,10 @@ pub const KERNEL_DISPATCH_PUSH_CONSTANT_SIZE: u32 = 48;
+ 
+ pub const KERNEL_LOCAL_SIZE_SPEC_IDS: [u32; 3] = [0, 1, 2];
+ 
++/// SpecId of the fragment raster sample count when it was not known at translation time (Metal libraries are
++/// translated before any pipeline exists). The host specializes it with the pipeline's rasterizationSamples.
++pub const RASTER_SAMPLE_COUNT_SPEC_ID: u32 = 0x4E56_0001;
++
+ pub const DEFAULT_KERNEL_DISPATCH_PUSH_CONSTANT_OFFSET: u32 = 0;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+diff --git a/translator/wrapper/src/buffer_addresses.rs b/translator/wrapper/src/buffer_addresses.rs
+index 99114d4..af77d5b 100644
+--- a/translator/wrapper/src/buffer_addresses.rs
++++ b/translator/wrapper/src/buffer_addresses.rs
+@@ -25,6 +25,69 @@ fn keep_stated_align(scalar: u32, stated: Option<&Operand>) -> u32 {
+     match stated { Some(Operand::LiteralBit32(a)) if a.is_power_of_two() && *a <= 16 => scalar.max(*a), _ => scalar }
+ }
+ 
++#[derive(Clone, Copy)]
++struct Table { var: u32, elem: u32, pair: bool }
++enum Merge { None, Into(Table), Keep }
++// The translator's own table at TABLE_BINDING, if the module has one in the layout this pass emits (StorageBuffer, set 0,
++// one-member block holding an array of u64 with stride 8). Keep = a table this pass cannot extend.
++fn merge_table(m: &rspirv::dr::Module, defs: &HashMap<u32, Instruction>, bindings: &HashMap<u32, u32>) -> Merge {
++    if std::env::var_os("NVMTL_NO_TABLE_MERGE").is_some() {
++        return if bindings.values().any(|b| *b == TABLE_BINDING) { Merge::Keep } else { Merge::None };
++    }
++    let Some((&var, _)) = bindings.iter().find(|(_, b)| **b == TABLE_BINDING) else { return Merge::None };
++    let Some(v) = defs.get(&var).filter(|i| i.class.opcode == Op::Variable && i.operands.first() == Some(&Operand::StorageClass(StorageClass::StorageBuffer))) else { return Merge::Keep };
++    let Some(pt) = v.result_type.and_then(|t| defs.get(&t)) else { return Merge::Keep };
++    let Some(block) = pt.operands.get(1).and_then(id).and_then(|b| defs.get(&b)) else { return Merge::Keep };
++    if block.class.opcode != Op::TypeStruct || block.operands.len() != 1 { return Merge::Keep; }
++    let Some(arr) = id(&block.operands[0]).and_then(|a| defs.get(&a)) else { return Merge::Keep };
++    if !matches!(arr.class.opcode, Op::TypeRuntimeArray | Op::TypeArray) { return Merge::Keep; }
++    let Some(elem) = arr.operands.first().and_then(id) else { return Merge::Keep };
++    // u64 entries, or uvec2 (the translator's native table reads texture metadata as two u32 words)
++    let pair = match defs.get(&elem).map(|e| (e.class.opcode, e.operands.clone())) {
++        Some((Op::TypeInt, o)) if o == vec![Operand::LiteralBit32(64), Operand::LiteralBit32(0)] => false,
++        Some((Op::TypeVector, o)) if o.len() == 2 && o[1] == Operand::LiteralBit32(2)
++            && id(&o[0]).and_then(|c| defs.get(&c)).is_some_and(|c| c.class.opcode == Op::TypeInt && c.operands == vec![Operand::LiteralBit32(32), Operand::LiteralBit32(0)]) => true,
++        _ => return Merge::Keep,
++    };
++    let stride = m.annotations.iter().find_map(|a| match a.operands.as_slice() {
++        [Operand::IdRef(n), Operand::Decoration(Decoration::ArrayStride), Operand::LiteralBit32(s)] if Some(*n) == arr.result_id => Some(*s), _ => None });
++    if stride != Some(8) { return Merge::Keep; }
++    let set = m.annotations.iter().find_map(|a| match a.operands.as_slice() {
++        [Operand::IdRef(n), Operand::Decoration(Decoration::DescriptorSet), Operand::LiteralBit32(s)] if *n == var => Some(*s), _ => None });
++    if set != Some(0) { return Merge::Keep; }
++    Merge::Into(Table { var, elem, pair })
++}
++// Pointer types of the table variable and of every pointer derived from it: they stay StorageBuffer pointers (the
++// conversion to physical pointers below must not touch them), and a buffer that shares one of them keeps the module as is.
++fn table_pointer_types(m: &rspirv::dr::Module, table: u32) -> (HashSet<u32>, Vec<u32>, bool) {
++    let mut derived: HashSet<u32> = HashSet::from([table]);
++    let mut types = HashSet::new();
++    if let Some(t) = m.types_global_values.iter().find(|i| i.result_id == Some(table)).and_then(|i| i.result_type) { types.insert(t); }
++    loop {
++        let before = derived.len();
++        for i in m.all_inst_iter() {
++            if matches!(i.class.opcode, Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain | Op::CopyObject)
++                && i.operands.first().and_then(id).is_some_and(|b| derived.contains(&b)) {
++                if let Some(r) = i.result_id { derived.insert(r); }
++                if let Some(t) = i.result_type { types.insert(t); }
++            }
++        }
++        if derived.len() == before { break; }
++    }
++    // values not derived from the table that have one of its pointer types (a buffer element pointer of the same type, e.g.
++    // StorageBuffer u32): the caller gives them a pointer type of their own. Anything but a plain access chain/copy there
++    // (function parameter, phi, select, call) could mix table and buffer pointers, so the module is kept as it is.
++    let mut other = Vec::new(); let mut conflict = false;
++    for i in m.all_inst_iter() {
++        if let (Some(t), Some(r)) = (i.result_type, i.result_id) {
++            if types.contains(&t) && !derived.contains(&r) && r != table {
++                if matches!(i.class.opcode, Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain | Op::CopyObject) { other.push(r); }
++                else { conflict = true; }
++            }
++        }
++    }
++    (types, other, conflict)
++}
+ pub fn lower(bytes: &[u8]) -> Result<Vec<u8>, String> {
+     match crate::linearize::apply(bytes) {
+         Ok((lin, _why)) => lower_addresses(&lin),
+@@ -34,7 +97,7 @@ pub fn lower(bytes: &[u8]) -> Result<Vec<u8>, String> {
+ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+     let mut m = rspirv::dr::load_bytes(bytes).map_err(|e| e.to_string())?;
+     let defs: HashMap<_,_> = m.types_global_values.iter().filter_map(|i| i.result_id.map(|n|(n,i.clone()))).collect();
+-    let sb_types: HashMap<u32,u32> = defs.iter().filter_map(|(&n,i)| {
++    let mut sb_types: HashMap<u32,u32> = defs.iter().filter_map(|(&n,i)| {
+         (i.class.opcode == Op::TypePointer && i.operands.first() == Some(&Operand::StorageClass(StorageClass::StorageBuffer)))
+             .then(|| (n, id(&i.operands[1]).unwrap()))
+     }).collect();
+@@ -46,12 +109,42 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+             }
+         }
+     }
++    // A module the translator already gave an address table (pointer arguments, texture metadata) used to be returned as it
++    // was, so its plain buffers stayed descriptors: every setFragmentBytes then needed a new descriptor set per draw. Its
++    // remaining buffers are now lowered onto that same table (same layout: one u64 address per buffer slot) when the table's
++    // own pointer types are not shared with them; otherwise the module is returned unchanged as before.
++    let existing = match merge_table(&m, &defs, &bindings) { Merge::None => None, Merge::Into(t) => Some(t), Merge::Keep => return Ok(bytes.to_vec()) };
++    let (table_types, shared_vals, conflict) = match existing { Some(t) => table_pointer_types(&m, t.var), None => (HashSet::new(), Vec::new(), false) };
++    if conflict { return Ok(bytes.to_vec()); }
++    for t in &table_types { sb_types.remove(t); }
++    let mut next0 = m.header.as_ref().ok_or("no SPIR-V header")?.bound;
++    if !shared_vals.is_empty() {
++        // one clone per shared pointer type for the buffer side; the clones become physical pointers below
++        let mut clone: HashMap<u32, u32> = HashMap::new();
++        let shared: HashSet<u32> = shared_vals.iter().copied().collect();
++        let mut add = Vec::new();
++        for f in &mut m.functions { for b in &mut f.blocks { for i in &mut b.instructions {
++            if i.result_id.is_some_and(|r| shared.contains(&r)) {
++                let t = i.result_type.unwrap();
++                let c = *clone.entry(t).or_insert_with(|| { let n = next0; next0 += 1; add.push((n, t)); n });
++                i.result_type = Some(c);
++            }
++        }}}
++        for (n, t) in add {
++            let pointee = defs.get(&t).and_then(|d| d.operands.get(1)).and_then(id).ok_or("shared pointer type without a pointee")?;
++            m.types_global_values.push(inst(Op::TypePointer, None, Some(n), vec![Operand::StorageClass(StorageClass::StorageBuffer), Operand::IdRef(pointee)]));
++            sb_types.insert(n, pointee);
++        }
++        m.header.as_mut().unwrap().bound = next0;
++    }
+     let roots: Vec<(u32,u32,u32)> = m.types_global_values.iter().filter_map(|i| {
+-        (i.class.opcode == Op::Variable && i.operands.first() == Some(&Operand::StorageClass(StorageClass::StorageBuffer)))
++        (i.class.opcode == Op::Variable && i.operands.first() == Some(&Operand::StorageClass(StorageClass::StorageBuffer))
++            && Some(i.result_id.unwrap()) != existing.map(|t| t.var))
+             .then(|| (i.result_id.unwrap(),i.result_type.unwrap(),*bindings.get(&i.result_id.unwrap()).unwrap_or(&u32::MAX)))
+     }).collect();
+     if roots.is_empty() { return Ok(bytes.to_vec()); }
+-    if bindings.values().any(|b| *b == TABLE_BINDING) { return Ok(bytes.to_vec()); }
++    if existing.is_none() && bindings.values().any(|b| *b == TABLE_BINDING) { return Ok(bytes.to_vec()); }
++    if existing.is_some() && roots.iter().any(|r| table_types.contains(&r.1)) { return Ok(bytes.to_vec()); }
+     for &(n,_,b) in &roots {
+         if b >= 32 || sets.get(&n) != Some(&0) { return Err(format!("unsupported source buffer descriptor {n}, binding {b}")); }
+     }
+@@ -75,6 +168,12 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+     m.types_global_values.retain(|i|!i.result_id.is_some_and(|n|root_ids.contains(&n)));
+     m.annotations.retain(|i| !i.operands.first().and_then(id).is_some_and(|n|root_ids.contains(&n)));
+     m.debug_names.retain(|i| !i.operands.first().and_then(id).is_some_and(|n|root_ids.contains(&n)));
++    // a pointer type of our own for the table accesses: an existing StorageBuffer u64 pointer may belong to a lowered buffer
++    let (table, ptr_ulong) = if let Some(t) = existing {
++        let pu = fresh(); m.types_global_values.push(inst(Op::TypePointer,None,Some(pu),vec![Operand::StorageClass(StorageClass::StorageBuffer),Operand::IdRef(t.elem)]));
++        (t.var, pu)
++    } else { (0, 0) };
++    let (table, ptr_ulong) = if existing.is_some() { (table, ptr_ulong) } else {
+     let arr=fresh(); let block=fresh(); let ptr_block=fresh(); let ptr_ulong=fresh(); let table=fresh();
+     m.types_global_values.extend([
+         inst(Op::TypeRuntimeArray,None,Some(arr),vec![Operand::IdRef(ulong)]),
+@@ -91,13 +190,14 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+         inst(Op::Decorate,None,None,vec![Operand::IdRef(table),Operand::Decoration(Decoration::Binding),Operand::LiteralBit32(TABLE_BINDING)]),
+         inst(Op::Decorate,None,None,vec![Operand::IdRef(table),Operand::Decoration(Decoration::NonWritable)]),
+     ]);
++    (table, ptr_ulong) };
+     let mut constants=HashMap::new();
+     for b in std::iter::once(0).chain(roots.iter().map(|r|r.2)) {
+         constants.entry(b).or_insert_with(|| { let n=fresh(); m.types_global_values.push(inst(Op::Constant,Some(uint),Some(n),vec![Operand::LiteralBit32(b)])); n });
+     }
+     for e in &mut m.entry_points {
+         e.operands.retain(|o|!id(o).is_some_and(|n|root_ids.contains(&n)));
+-        if m.header.as_ref().unwrap().version >= 0x00010400 { e.operands.push(Operand::IdRef(table)); }
++        if m.header.as_ref().unwrap().version >= 0x00010400 && !e.operands.contains(&Operand::IdRef(table)) { e.operands.push(Operand::IdRef(table)); }
+     }
+     for cap in [Capability::Int64,Capability::PhysicalStorageBufferAddresses] {
+         if !m.capabilities.iter().any(|i|i.operands==vec![Operand::Capability(cap)]) { m.capabilities.push(inst(Op::Capability,None,None,vec![Operand::Capability(cap)])); }
+@@ -110,11 +210,22 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+         let mut replace=HashMap::new(); let mut prelude=Vec::new();
+         for &(root,ty,b) in &roots {
+             let p=fresh(); let addr=fresh(); let physical=fresh();
++            if let Some(t) = existing.filter(|t| t.pair) {
++                let words=fresh();
++                prelude.extend([
++                    inst(Op::AccessChain,Some(ptr_ulong),Some(p),vec![Operand::IdRef(table),Operand::IdRef(constants[&0]),Operand::IdRef(constants[&b])]),
++                    inst(Op::Load,Some(t.elem),Some(words),vec![Operand::IdRef(p)]),
++                    inst(Op::Bitcast,Some(ulong),Some(addr),vec![Operand::IdRef(words)]),
++                    inst(Op::ConvertUToPtr,Some(ty),Some(physical),vec![Operand::IdRef(addr)]),
++                ]);
++            } else {
+             prelude.extend([
+                 inst(Op::AccessChain,Some(ptr_ulong),Some(p),vec![Operand::IdRef(table),Operand::IdRef(constants[&0]),Operand::IdRef(constants[&b])]),
+                 inst(Op::Load,Some(ulong),Some(addr),vec![Operand::IdRef(p)]),
+                 inst(Op::ConvertUToPtr,Some(ty),Some(physical),vec![Operand::IdRef(addr)]),
+-            ]); replace.insert(root,physical);
++            ]);
++            }
++            replace.insert(root,physical);
+         }
+         for param in &f.parameters {
+             if param.result_type.is_some_and(|t|sb_types.contains_key(&t)) {
+diff --git a/translator/wrapper/src/lib.rs b/translator/wrapper/src/lib.rs
+index e4ab9c0..24c9502 100644
+--- a/translator/wrapper/src/lib.rs
++++ b/translator/wrapper/src/lib.rs
+@@ -42,9 +42,14 @@ thread_local! { static RSC: std::cell::Cell<u32> = const { std::cell::Cell::new(
+ #[no_mangle]
+ pub extern "C" fn nvmtl_translate_set_raster_sample_count(n: u32) { RSC.with(|c| c.set(n)); }
+ fn apply_rsc(mut o: metal2vulkan::passes::TransformOptions) -> metal2vulkan::passes::TransformOptions {
++    // Local (DO-NOT-REVERT): only a count the plugin named is baked in. Unnamed (0) stays None, so the translator emits
++    // get_num_samples as the RASTER_SAMPLE_COUNT_SPEC_ID specialization constant and the plugin passes the pipeline's real
++    // count (nvmtl_vk.c). Upstream's default Some(1) made every MSAA pipeline read 1 sample.
+     if o.raster_sample_count.is_none() {
+         let n = RSC.with(|c| c.get());
+-        o.raster_sample_count = Some(if matches!(n, 1 | 2 | 4 | 8 | 16 | 32 | 64) { n } else { 1 });
++        if matches!(n, 1 | 2 | 4 | 8 | 16 | 32 | 64) {
++            o.raster_sample_count = Some(n);
++        }
+     }
+     o
+ }

@@ -1,0 +1,159 @@
+diff --git a/kexts/NVRMFB/fb/nvrm-fb.cpp b/kexts/NVRMFB/fb/nvrm-fb.cpp
+index d82d313..7950470 100644
+--- a/kexts/NVRMFB/fb/nvrm-fb.cpp
++++ b/kexts/NVRMFB/fb/nvrm-fb.cpp
+@@ -2113,6 +2113,107 @@ SYSCTL_INT(_debug, OID_AUTO, nvrmfb_flip_interval, CTLFLAG_RW | CTLFLAG_LOCKED,
+ SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_flip_us_sum, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gFlipUsSum, "microseconds spent in pure-flip applyModeSetConfig");
+ SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_flip_n, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gFlipN, "pure flips timed");
+ SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_flip_us_max, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gFlipUsMax, "the slowest pure flip, us");
++// VRAM clear diagnostics (branch kext-scrubcheck). RM scrubs video memory when it is freed (PMA scrub-on-free, on by default
++// since GK110), so a fresh allocation should already read zero and the CPU clear below (~0.25 ms per MB over BAR1) would be
++// redundant. Before clearing, vramGrant reads one qword per 64 KB (one per 4 KB on every 256th grant) and counts any nonzero.
++// debug.nvrmfb_clear_mode: 2 (default) = skip the clear when every sampled qword is zero (clears with rep stosb otherwise),
++// 0 = always rep stosb (the old behaviour), 1 = movnti 64-byte lines, 3 = rep stosq. debug.nvrmfb_scrubtest=N: grant N x 8 MB, fill them with a pattern, free
++// them, grant N again and count reallocations that overlap the filled ranges / show the pattern (results in nvrmfb_scrubtest_*).
++static int gClearMode = 2;   // measured 2026-10-13: fresh grants always read zero (RM's copy-engine scrub-on-free), so the CPU clear only repeats it
++static volatile SInt64 gScrubChecked, gScrubDirty, gScrubDirtyWords, gScrubDense, gScrubDenseDirty, gScrubWords, gScrubCheckNs;
++static volatile SInt64 gClearNs, gClearBytes, gClearSkipped, gClearSkippedBytes;
++static volatile SInt64 gScrubLastDirtyPhys, gScrubLastDirtyOff, gScrubLastDirtyVal;
++static int gScrubTestGrants, gScrubTestOverlap, gScrubTestDirty, gScrubTestDirtyOverlap;
++static struct NVRMVramRequest *volatile gScrubProbe; static volatile SInt64 gScrubProbeDirty;
++SYSCTL_INT(_debug, OID_AUTO, nvrmfb_clear_mode, CTLFLAG_RW | CTLFLAG_LOCKED, &gClearMode, 0, "0 rep stosb, 1 movnti, 2 skip when sampled zero, 3 rep stosq");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_checked, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubChecked, "grants sampled before the clear");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_dirty, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubDirty, "grants with a nonzero sampled qword");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_dirty_words, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubDirtyWords, "nonzero sampled qwords");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_dense, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubDense, "grants sampled per 4 KB");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_dense_dirty, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubDenseDirty, "dense-sampled grants found nonzero");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_words, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubWords, "qwords sampled");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_check_ns, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubCheckNs, "ns spent sampling");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_clear_ns, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gClearNs, "ns spent in the CPU clear");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_clear_bytes, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gClearBytes, "bytes cleared by the CPU");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_clear_skipped, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gClearSkipped, "grants not cleared (mode 2)");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_clear_skipped_bytes, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gClearSkippedBytes, "bytes not cleared (mode 2)");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_last_dirty_phys, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubLastDirtyPhys, "phys of the last dirty grant");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_last_dirty_off, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubLastDirtyOff, "offset of its first nonzero qword");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_last_dirty_val, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubLastDirtyVal, "that qword");
++SYSCTL_INT(_debug, OID_AUTO, nvrmfb_scrubtest_grants, CTLFLAG_RD | CTLFLAG_LOCKED, &gScrubTestGrants, 0, "scrubtest: second-round grants");
++SYSCTL_INT(_debug, OID_AUTO, nvrmfb_scrubtest_overlap, CTLFLAG_RD | CTLFLAG_LOCKED, &gScrubTestOverlap, 0, "scrubtest: of those, overlapping a filled range");
++SYSCTL_INT(_debug, OID_AUTO, nvrmfb_scrubtest_dirty, CTLFLAG_RD | CTLFLAG_LOCKED, &gScrubTestDirty, 0, "scrubtest: of those, nonzero before the clear");
++SYSCTL_INT(_debug, OID_AUTO, nvrmfb_scrubtest_dirty_overlap, CTLFLAG_RD | CTLFLAG_LOCKED, &gScrubTestDirtyOverlap, 0, "scrubtest: overlapping AND nonzero");
++static inline void nvu_zero_wide(void *p, size_t n) { size_t q = n >> 3; __asm__ __volatile__("rep stosq" : "+D"(p), "+c"(q) : "a"(0ull) : "memory"); nvu_zero(p, n & 7); }
++static inline void nvu_zero_nt(void *p, size_t n)
++{
++    char *c = (char *)p; const NvU64 z = 0;
++    for (size_t i = n >> 6; i; i--, c += 64)
++        __asm__ __volatile__("movnti %1, 0(%0)\n\tmovnti %1, 8(%0)\n\tmovnti %1, 16(%0)\n\tmovnti %1, 24(%0)\n\t"
++                             "movnti %1, 32(%0)\n\tmovnti %1, 40(%0)\n\tmovnti %1, 48(%0)\n\tmovnti %1, 56(%0)"
++                             : : "r"(c), "r"(z) : "memory");
++    __asm__ __volatile__("sfence" : : : "memory");
++    nvu_zero(c, n & 63);
++}
++// Reads the sampled qwords of a fresh grant; returns how many were nonzero.
++static SInt64 nvrmScrubSample(void *kva, NvU64 n, NvU64 phys)
++{
++    const SInt64 seq = OSAddAtomic64(1, &gScrubChecked);
++    const bool dense = (seq & 255) == 0;
++    const NvU64 step = dense ? 4096 : 65536, start = ((NvU64)seq * 0x9E38ull) & (step - 8);
++    const uint64_t t0 = mach_absolute_time();
++    volatile const NvU64 *q = (volatile const NvU64 *)kva;
++    SInt64 dirty = 0, words = 0; NvU64 firstOff = 0, firstVal = 0;
++    for (NvU64 off = start; off + 8 <= n; off += step, words++) {
++        const NvU64 v = q[off >> 3];
++        if (v && !dirty++) { firstOff = off; firstVal = v; }
++    }
++    const NvU64 v = q[(n >> 3) - 1]; words++;
++    if (v && !dirty++) { firstOff = n - 8; firstVal = v; }
++    OSAddAtomic64((SInt64)(mach_absolute_time() - t0), &gScrubCheckNs); OSAddAtomic64(words, &gScrubWords);
++    if (dense) OSAddAtomic64(1, &gScrubDense);
++    if (dirty) {
++        OSAddAtomic64(1, &gScrubDirty); OSAddAtomic64(dirty, &gScrubDirtyWords);
++        if (dense) OSAddAtomic64(1, &gScrubDenseDirty);
++        gScrubLastDirtyPhys = (SInt64)phys; gScrubLastDirtyOff = (SInt64)firstOff; gScrubLastDirtyVal = (SInt64)firstVal;
++    }
++    return dirty;
++}
++static int nvrmfb_scrubtest_sysctl SYSCTL_HANDLER_ARGS
++{
++    int v = 0; int err = sysctl_handle_int(oidp, &v, 0, req);
++    if (err || req->newptr == 0) return err;
++    if (!gFB || v < 1 || v > 32) return EINVAL;
++    static struct NVRMVramRequest a[32], b[32]; static NvU64 ap[32], an[32];
++    int na = 0, nb = 0; gScrubTestGrants = gScrubTestOverlap = gScrubTestDirty = gScrubTestDirtyOverlap = 0;
++    for (; na < v; na++) {
++        struct NVRMVramRequest *r = &a[na]; nvu_zero(r, sizeof *r);
++        r->version = NVRM_VRAM_ABI_VERSION; r->size = 8323072ull;
++        if (!gFB->vramGrant(r)) break;
++        ap[na] = r->phys; an[na] = r->actualSize;
++        NvU64 *w = (NvU64 *)r->kva; size_t qn = (size_t)(r->actualSize >> 3);
++        __asm__ __volatile__("rep stosq" : "+D"(w), "+c"(qn) : "a"(0xA55A5AA5C0DEF00Dull) : "memory");
++    }
++    for (int i = 0; i < na; i++) gFB->vramRelease(&a[i]);
++    for (; nb < na; nb++) {
++        struct NVRMVramRequest *r = &b[nb]; nvu_zero(r, sizeof *r);
++        r->version = NVRM_VRAM_ABI_VERSION; r->size = 8323072ull;
++        gScrubProbeDirty = 0; gScrubProbe = r;
++        const bool ok = gFB->vramGrant(r);
++        gScrubProbe = nullptr;
++        if (!ok) break;
++        bool ov = false;
++        for (int i = 0; i < na; i++) if (r->phys < ap[i] + an[i] && r->phys + r->actualSize > ap[i]) ov = true;
++        gScrubTestGrants++; if (ov) gScrubTestOverlap++;
++        if (gScrubProbeDirty) { gScrubTestDirty++; if (ov) gScrubTestDirtyOverlap++; }
++    }
++    for (int i = 0; i < nb; i++) gFB->vramRelease(&b[i]);
++    kprintf("NVRM-fb: scrubtest: filled %d, regranted %d, overlapping %d, nonzero %d (overlapping and nonzero %d)\n",
++            na, gScrubTestGrants, gScrubTestOverlap, gScrubTestDirty, gScrubTestDirtyOverlap);
++    return 0;
++}
++SYSCTL_PROC(_debug, OID_AUTO, nvrmfb_scrubtest, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, nvrmfb_scrubtest_sysctl, "I",
++            "fill N x 8 MB, free, regrant N and check for the pattern");
+ static bool gFbSysctl = false;
+ static void nvrmfbInstallSysctl(void)
+ {
+@@ -2126,6 +2227,26 @@ static void nvrmfbInstallSysctl(void)
+     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_lean);
+     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch); sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch_waits);
+     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch_timeouts); sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch_max_us);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_clear_mode);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_checked);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_dirty);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_dirty_words);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_dense);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_dense_dirty);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_words);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_check_ns);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_clear_ns);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_clear_bytes);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_clear_skipped);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_clear_skipped_bytes);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_last_dirty_phys);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_last_dirty_off);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_last_dirty_val);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrubtest_grants);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrubtest_overlap);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrubtest_dirty);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrubtest_dirty_overlap);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrubtest);
+ }
+ 
+ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
+@@ -2190,7 +2311,18 @@ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
+     }
+     if (!mem) { OSAddAtomic64(-(SInt64)want, &gVramMappedBytes); return false; }
+ 
+-    nvu_zero(kva, (size_t)want);
++    const SInt64 dirty = nvrmScrubSample(kva, want, phys);
++    if (r == gScrubProbe) gScrubProbeDirty = dirty;
++    const int clearMode = gClearMode;
++    if (clearMode == 2 && !dirty) {
++        OSAddAtomic64(1, &gClearSkipped); OSAddAtomic64((SInt64)want, &gClearSkippedBytes);
++    } else {
++        const uint64_t c0 = mach_absolute_time();
++        if (clearMode == 1) nvu_zero_nt(kva, (size_t)want);
++        else if (clearMode == 3) nvu_zero_wide(kva, (size_t)want);
++        else nvu_zero(kva, (size_t)want);
++        OSAddAtomic64((SInt64)(mach_absolute_time() - c0), &gClearNs); OSAddAtomic64((SInt64)want, &gClearBytes);
++    }
+     volatile NvU64 *q = (volatile NvU64 *)kva;
+     q[0] = 0x5A5AA5A5C0FFEE01ull;
+     NvU64 back = q[0];

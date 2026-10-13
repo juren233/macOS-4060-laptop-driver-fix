@@ -1,0 +1,34 @@
+<!doctype html><meta charset="utf-8"><title>danmaku test</title>
+<style>
+body{margin:0;background:#000;overflow:hidden}
+#wrap{position:relative;width:100vw;height:56.25vw;max-height:100vh;overflow:hidden}
+video{position:absolute;inset:0;width:100%;height:100%}
+#dm{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+/* copied from Bilibili's bili-danmaku-x rules */
+.bili-danmaku-x-dm{position:absolute;line-height:1.125;user-select:none;white-space:pre;perspective:500px;will-change:transform,opacity,top,left;font-weight:var(--fontWeight,bold);font-family:var(--fontFamily);font-size:var(--fontSize,25px);color:var(--color,#fff);text-shadow:var(--textShadow);transform:translateZ(0px);top:var(--top,0);opacity:0;align-items:center;left:var(--offset,-10px);z-index:var(--zIndex,200);display:var(--display,flex)}
+.bili-danmaku-x-dm.bili-danmaku-x-show{opacity:var(--opacity,1);display:flex}
+.bili-danmaku-x-dm.bili-danmaku-x-show.bili-danmaku-x-roll{animation:roll linear var(--duration) forwards}
+@keyframes roll{0%{transform:translateX(0px) translateZ(0px)}100%{transform:translateX(var(--translateX)) translateZ(0)}}
+</style>
+<div id=wrap><video id=v muted autoplay loop playsinline></video><div id=dm></div></div>
+<script>
+const P=new URLSearchParams(location.search), v=document.getElementById('v'), dm=document.getElementById('dm');
+v.muted=true; v.src=P.get('f')||'h264_4k60.mp4';
+const RATE=+(P.get('rate')||0), DUR=8, FS=25;
+const words=['哈哈哈哈哈哈哈哈','前方高能','这新字幕笑死我了','awsl','2333333333','来了来了','名场面','啊啊啊啊啊啊啊啊啊啊啊啊','前排','泪目','好耶！！！','空降成功','你是一个一个一个','这就是传说中的','绝了','yyds','爷青回','打卡','下次一定','我直接好家伙'];
+const cols=['#ffffff','#ffffff','#ffffff','#fe0302','#ffff00','#00cd00','#84c0cb','#ff7204'];
+const SH='1px 0 1px #000000,0 1px 1px #000000,0 -1px 1px #000000,-1px 0 1px #000000';
+let lane=0;
+function spawn(){const W=dm.clientWidth, H=dm.clientHeight, lanes=Math.max(1,Math.floor(H/(FS*1.15)));
+  const e=document.createElement('div'); e.className='bili-danmaku-x-dm'; e.textContent=words[Math.random()*words.length|0];
+  e.style.cssText=`--opacity:0.8;--fontSize:${FS}px;--fontFamily:SimHei,'Microsoft JhengHei',Arial,Helvetica,sans-serif;--fontWeight:bold;--color:${cols[Math.random()*cols.length|0]};--textShadow:${SH};--top:${(lane++%lanes)*FS*1.15}px;--offset:${W}px;--duration:${DUR}s`;
+  dm.appendChild(e); const w=e.offsetWidth; e.style.setProperty('--translateX',`${-(W+w)}px`); e.classList.add('bili-danmaku-x-show','bili-danmaku-x-roll');
+  e.addEventListener('animationend',()=>e.remove());}
+// ?mask=1: Bilibili's 智能防挡弹幕 = CSS mask-image (layered linear-gradients) on the danmaku layer, replaced ~10 times a second;
+// ?w=<css px>: player width (Bilibili's danmaku layer was 910x512 CSS).
+if(P.get('w')){const W=+P.get('w'); const wr=document.getElementById('wrap'); wr.style.width=W+'px'; wr.style.height=(W*9/16)+'px';}
+if(P.get('mask')==='1'){let k=0; setInterval(()=>{k++; const g=[]; for(let i=0;i<4;i++){const a=(k*7+i*45)%360, c=20+((k*13+i*29)%60);
+  g.push(`linear-gradient(${a}deg, #000 ${c-15}%, transparent ${c}%, transparent ${c+10}%, #000 ${c+25}%)`);}
+  dm.style.webkitMaskImage=dm.style.maskImage=g.join(','); dm.style.webkitMaskComposite='source-in'; dm.style.maskComposite='intersect';},100);}
+if(RATE>0){let acc=0,last=performance.now(); (function tick(t){acc+=(t-last)/1000*RATE; last=t; while(acc>=1){spawn();acc--;} requestAnimationFrame(tick);})(last);}
+</script>

@@ -1,0 +1,206 @@
+diff --git a/plugin/nvmtl_vk.c b/plugin/nvmtl_vk.c
+index 46ac8a7..592a0e2 100644
+--- a/plugin/nvmtl_vk.c
++++ b/plugin/nvmtl_vk.c
+@@ -2077,9 +2077,9 @@ static int nvmtl_spirv_bmask(const void *p, size_t n, uint64_t out[4])
+        Binding decoration names only the first one: follow variable -> pointer -> array -> length constant so every element's slot
+        gets written. Without this only element 0 ever reached the shader and the others read the dummy descriptor. */
+     const uint32_t bound = w[3];
+-    uint32_t *info = (bound && bound <= (1u << 22)) ? (uint32_t *)calloc((size_t)bound * 4, sizeof(uint32_t)) : NULL;
+-    enum { VAR_TYPE = 0, PTR_POINTEE = 1, ARR_LEN = 2, CONST_VAL = 3 };
+-#define NVMTL_BM_INFO(kind, id) info[(size_t)(id) * 4 + (kind)]
++    uint32_t *info = (bound && bound <= (1u << 22)) ? (uint32_t *)calloc((size_t)bound * 5, sizeof(uint32_t)) : NULL;
++    enum { VAR_TYPE = 0, PTR_POINTEE = 1, ARR_LEN = 2, CONST_VAL = 3, IN_HEAP = 4 };
++#define NVMTL_BM_INFO(kind, id) info[(size_t)(id) * 5 + (kind)]
+     if (info) {
+         for (size_t i = 5; i < nw; ) {
+             uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
+@@ -2088,13 +2088,16 @@ static int nvmtl_spirv_bmask(const void *p, size_t n, uint64_t out[4])
+             else if (op == 32 && wc == 4 && w[i + 1] < bound) NVMTL_BM_INFO(PTR_POINTEE, w[i + 1]) = w[i + 3];
+             else if (op == 28 && wc == 4 && w[i + 1] < bound) NVMTL_BM_INFO(ARR_LEN, w[i + 1]) = w[i + 3];
+             else if (op == 43 && wc >= 4 && w[i + 2] < bound) NVMTL_BM_INFO(CONST_VAL, w[i + 2]) = w[i + 3];
++            else if (op == 71 && wc == 4 && w[i + 2] == 34 && w[i + 1] < bound) NVMTL_BM_INFO(IN_HEAP, w[i + 1]) = w[i + 3] == 2;
+             i += wc;
+         }
+     }
+     for (size_t i = 5; i < nw; ) {
+         uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
+         if (!wc || i + wc > nw) { free(info); return 0; }
+-        if (op == 71 && wc == 4 && w[i + 2] == 33) {
++        // the bindless heap (DescriptorSet 2) has its own binding numbers: its binding 0 is not buffer slot 0. Counting it made
++        // every texture-sampling shader look like it read buffer 0 through a descriptor, so no draw could reuse its set.
++        if (op == 71 && wc == 4 && w[i + 2] == 33 && !(info && w[i + 1] < bound && NVMTL_BM_INFO(IN_HEAP, w[i + 1]))) {
+             uint32_t b = w[i + 3], count = 1;
+             if (info && w[i + 1] < bound) {
+                 uint32_t vt = NVMTL_BM_INFO(VAR_TYPE, w[i + 1]);
+@@ -2128,7 +2131,8 @@ static int nvmtl_dirty_only_on(void)
+ typedef struct { nvmtl_slot s[2][NVMTL_NBIND];
+                  uint8_t dirty[2]; VkDescriptorSet last[2]; unsigned last_idx[2]; uint32_t last_hi[2]; uint64_t lastw[2][4];
+                  uint64_t chg[2][4]; uint64_t texgen[2]; const void *emb_fn[2]; uint64_t emb_gen[2]; uint32_t emb_n[2];
+-                 uint64_t emb_key[2][NVMTL_EMB_KEYMAX]; } nvmtl_bindtable;
++                 uint64_t emb_key[2][NVMTL_EMB_KEYMAX];
++                 uint32_t last_dyn[2]; void *last_tblbuf[2]; } nvmtl_bindtable;
+ 
+ static VkDescriptorSetLayout g_setLayout;
+ #define NVMTL_MAX_POOLS 64
+@@ -2300,7 +2304,13 @@ static int nvmtl_table_ubo(void)
+     }
+     return v;
+ }
+-static const uint32_t g_dyn_zero[2] = { 0, 0 };
++static int nvmtl_table_reuse_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_TABLE_REUSE"); on = !(e && e[0] == '0');
++        nvlog("vk: descriptor-set reuse with a new address table %s (NVMTL_TABLE_REUSE=%s)", on ? "ON" : "OFF", e ? e : "unset"); }
++    return on;
++}
+ static VkDescriptorType binding_type(uint32_t i)
+ {
+     if (i == NVMTL_ADDRESS_BINDING && nvmtl_table_ubo()) return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+@@ -2540,7 +2550,7 @@ int nvmtl_vk_bind_buffer_offset(nvk_cmdbuf *c, uint32_t set, uint32_t index, siz
+     nvmtl_bindtable *t = (nvmtl_bindtable *)c->table;
+     if (t->s[set][index].kind != NVMTL_SLOT_BUF) return -1;
+     if (offset >= t->s[set][index].size) { nvlog("buffer offset %zu exceeds buffer length %zu", offset, t->s[set][index].size); return -1; }
+-    if (t->s[set][index].off != offset) t->dirty[set] = 1;
++    if (t->s[set][index].off != offset) { t->dirty[set] = 1; t->chg[set][index >> 6] |= 1ull << (index & 63); }
+     t->s[set][index].off = offset;
+     return 0;
+ }
+@@ -2691,7 +2701,9 @@ static void nvmtl_perf_submit(unsigned sets, const uint64_t *pt)
+             (unsigned long long)g_wit_ok, (unsigned long long)g_wit_waited, (unsigned long long)g_wit_leak,
+             (unsigned long long)g_wit_blind, (unsigned long long)g_wit_ctl_fired, (unsigned long long)g_wit_ctl_run, s);
+ }
+-static int nvmtl_address_snapshot(nvk_cmdbuf *c, uint32_t which, VkDescriptorBufferInfo *out) {
++// With the Uniform (dynamic) table the descriptor names the whole page at offset 0 and the table's slot is the bind's dynamic offset
++// (*dyn), so a descriptor set can be bound again with a NEW table while it stays on the same page (*page = the page's VkBuffer).
++static int nvmtl_address_snapshot(nvk_cmdbuf *c, uint32_t which, VkDescriptorBufferInfo *out, uint32_t *dyn, void **pagebuf) {
+     unsigned slot = c->address_count % NVMTL_TABLES_PER_PAGE;
+     nvmtl_address_page *page = c->address_pages;
+     if (slot == 0) {
+@@ -2717,7 +2729,9 @@ static int nvmtl_address_snapshot(nvk_cmdbuf *c, uint32_t which, VkDescriptorBuf
+         const nvmtl_slot *s = t ? &t->s[which][NVMTL_NBUF + i] : NULL;
+         addresses[2 * NVMTL_NBUF + i] = (s && s->kind == NVMTL_SLOT_TEX && s->h) ? (uint64_t)s->size : 0;
+     }
+-    *out = (VkDescriptorBufferInfo){ page->buffer.buf, slot * NVMTL_TABLE_BYTES, NVMTL_TABLE_BYTES };
++    if (nvmtl_table_ubo()) { *out = (VkDescriptorBufferInfo){ page->buffer.buf, 0, NVMTL_TABLE_BYTES }; *dyn = slot * NVMTL_TABLE_BYTES; }
++    else { *out = (VkDescriptorBufferInfo){ page->buffer.buf, slot * NVMTL_TABLE_BYTES, NVMTL_TABLE_BYTES }; *dyn = 0; }
++    *pagebuf = page->buffer.buf;
+     c->address_count++;
+     return 0;
+ }
+@@ -2856,7 +2870,9 @@ static VkDescriptorSet nvmtl_snapshot_set_md(nvk_cmdbuf *c, uint32_t which, uint
+     VkBufferView tv[NVMTL_NBIND];
+     VkDescriptorBufferInfo addressInfo;
+     if (!g_mutable) tb = NULL;
+-    if (NVMTL_E78_HAS(mask, NVMTL_ADDRESS_BINDING) && nvmtl_address_snapshot(c, which, &addressInfo)) { c->skipped++; return VK_NULL_HANDLE; }
++    uint32_t tdyn = 0; void *tbuf = NULL;
++    if (NVMTL_E78_HAS(mask, NVMTL_ADDRESS_BINDING) && nvmtl_address_snapshot(c, which, &addressInfo, &tdyn, &tbuf)) { c->skipped++; return VK_NULL_HANDLE; }
++    if (which < 2) { c->dyn[which] = tdyn; c->tblbuf[which] = tbuf; }
+     VkDescriptorBufferInfo dummyB = { (VkBuffer)g_dummyBuf.buf, 0, VK_WHOLE_SIZE };
+     VkDescriptorImageInfo  dummyI = { VK_NULL_HANDLE, (VkImageView)g_dummyImg.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+     VkDescriptorImageInfo  dummyS = { g_dummySampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED };
+@@ -2925,7 +2941,36 @@ static VkDescriptorSet nvmtl_snapshot_set_c(nvk_cmdbuf *c, uint32_t which, const
+     if (live && hi <= t->last_hi[which]) {
+         int covered = 1;
+         for (int k = 0; k < 4; k++) if (pm[k] & ~t->lastw[which][k]) covered = 0;
+-        if (covered) { nvmtl_enc78_count(E78C_SETREUSE, 1); return t->last[which]; }
++        if (covered) { nvmtl_enc78_count(E78C_SETREUSE, 1); c->dyn[which] = t->last_dyn[which]; c->tblbuf[which] = t->last_tblbuf[which]; return t->last[which]; }
++    }
++    // Only bindings this pipeline does not read through a descriptor changed since the previous set was written - typically
++    // setVertexBytes/setFragmentBytes, where the bytes ring moves the buffer's offset and the translated shader reaches the
++    // buffer through the address table: bind the previous set again with a NEW table on the same page (dynamic offset)
++    // instead of allocating and writing a whole set per draw (WebGL aquarium: one draw per fish, ~25% of Chrome's GPU
++    // thread). chg/dirty stay set, so a later pipeline that reads one of those bindings through a descriptor still gets a
++    // fresh set. NVMTL_TABLE_REUSE=0 in nvrm610.conf turns this off.
++    if (t->dirty[which] && t->last[which] && t->last_idx[which] < c->nsets && (VkDescriptorSet)c->sets[t->last_idx[which]].set == t->last[which]
++        && hi <= t->last_hi[which] && nvmtl_table_ubo() && nvmtl_table_reuse_on()) {
++        uint64_t hit = 0; int covered = 1;
++        for (int k = 0; k < 4; k++) {
++            uint64_t x = t->chg[which][k] & pm[k];
++            if (k == (NVMTL_ADDRESS_BINDING >> 6)) x &= ~(1ull << (NVMTL_ADDRESS_BINDING & 63));
++            hit |= x;
++            if (pm[k] & ~t->lastw[which][k]) covered = 0;
++        }
++        if (covered && !hit) {
++            if (!NVMTL_E78_HAS(pm, NVMTL_ADDRESS_BINDING)) {
++                nvmtl_enc78_count(E78C_SETREUSE, 1); c->dyn[which] = t->last_dyn[which]; c->tblbuf[which] = t->last_tblbuf[which]; return t->last[which];
++            }
++            nvmtl_address_page *pg = (nvmtl_address_page *)c->address_pages;
++            if (t->last_tblbuf[which] && pg && (c->address_count % NVMTL_TABLES_PER_PAGE) && pg->buffer.buf == t->last_tblbuf[which]) {
++                VkDescriptorBufferInfo ai; uint32_t dyn = 0; void *pb = NULL;
++                if (!nvmtl_address_snapshot(c, which, &ai, &dyn, &pb) && pb == t->last_tblbuf[which]) {
++                    nvmtl_enc78_count(E78C_SETREUSE, 1);
++                    t->last_dyn[which] = dyn; c->dyn[which] = dyn; c->tblbuf[which] = pb; return t->last[which];
++                }
++            }
++        }
+     }
+     uint64_t m[4];
+     for (int k = 0; k < 4; k++) m[k] = pm[k] | (live ? t->lastw[which][k] : 0);
+@@ -2943,6 +2988,7 @@ static VkDescriptorSet nvmtl_snapshot_set_c(nvk_cmdbuf *c, uint32_t which, const
+     VkDescriptorSet s = nvmtl_snapshot_set_md(c, which, hi, m, NULL, from, from ? cm : NULL);
+     if (!s) return s;
+     t->last[which] = s; t->last_idx[which] = c->nsets - 1; t->last_hi[which] = hi; t->dirty[which] = 0;
++    t->last_dyn[which] = c->dyn[which]; t->last_tblbuf[which] = c->tblbuf[which];
+     memset(t->chg[which], 0, sizeof t->chg[which]);
+     memcpy(t->lastw[which], m, sizeof m);
+     nvmtl_enc78_count(E78C_SETNEW, 1);
+@@ -2955,7 +3001,7 @@ int nvmtl_vk_bind_buffer(nvk_cmdbuf *c, uint32_t set, uint32_t index, nvk_buffer
+     if (!b || !b->buf || offset >= b->size) { nvlog("bind buffer: offset %zu outside length %zu", offset, b ? b->size : 0); return -1; }
+     int r = nvmtl_bind_slot(c, set, index, NVMTL_SLOT_BUF, b->buf, offset);
+     if (!r) { nvmtl_bindtable *t = (nvmtl_bindtable *)c->table; nvmtl_slot *sl = &t->s[set][index]; uint64_t a = nvmtl_vk_buffer_address(b);
+-              if (sl->size != b->size || sl->address != a) t->dirty[set] = 1;
++              if (sl->size != b->size || sl->address != a) { t->dirty[set] = 1; t->chg[set][index >> 6] |= 1ull << (index & 63); }
+               sl->size = b->size; sl->address = a; }
+     return r;
+ }
+@@ -3014,7 +3060,7 @@ void nvmtl_vk_cmd_bind_set(nvk_cmdbuf *c, nvk_pipeline *p)
+     if (g_sample_locations && c->sample_pattern.count)
+         pvkCmdPushConstants(c->cb, (VkPipelineLayout)p->layout, VK_SHADER_STAGE_FRAGMENT_BIT, NVMTL_SAMPLE_POSITION_OFFSET,
+                            NVMTL_SAMPLE_POSITION_BYTES, c->sample_pattern.position);
+-    pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, g_dyn_zero);
++    pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, c->dyn);
+ }
+ 
+ #define NVMTL_DEPTH_USAGE (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | \
+@@ -4205,7 +4251,7 @@ void nvmtl_vk_cmd_dispatch_threads(nvk_cmdbuf *c, nvk_pipeline *p, const uint32_
+         VkPipeline vp = nvmtl_compute_variant(p, local);
+         if (!vp) { c->skipped++; continue; }
+         pvkCmdBindPipeline(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, vp);
+-        if (!bound) { pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, g_dyn_zero); bound = 1; }
++        if (!bound) { pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, c->dyn); bound = 1; }
+         // Metal allows any group count per axis; Vulkan caps it (NVK: 0x7fffffff x 65535 x 65535, the width of the QMD
+         // grid fields). Geekbench's OpenCL Face Detection dispatched past 65535 on y and NAK's nak_fill_qmd aborted the
+         // process. Split into chunks and advance thread_base/threadgroup_base, which the translated kernel adds to
+@@ -4243,7 +4289,7 @@ void nvmtl_vk_cmd_dispatch_indirect_tg(nvk_cmdbuf *c, nvk_pipeline *p, nvk_buffe
+     if (b->map && off + 12 <= b->size) memcpy(g, (const char *)b->map + off, 12);
+     else { static int said; if (!said++) nvlog("vk: indirect dispatch grid is not CPU-visible — a kernel asking [[threads_per_grid]] reads 0"); }
+     pvkCmdBindPipeline(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, vp);
+-    pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, g_dyn_zero);
++    pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, c->dyn);
+     uint32_t pc[12] = { g[0] * tg[0], g[1] * tg[1], g[2] * tg[2], 0, 0, 0, 0, 0, 0, g[0], g[1], g[2] };
+     pvkCmdPushConstants(c->cb, (VkPipelineLayout)p->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, NVMTL_DISPATCH_PC_BYTES, pc);
+     pvkCmdDispatchIndirect(c->cb, (VkBuffer)b->buf, off);
+@@ -4255,7 +4301,7 @@ void nvmtl_vk_cmd_dispatch(nvk_cmdbuf *c, nvk_pipeline *p, uint32_t gx, uint32_t
+                              nvmtl_snapshot_set_t(c, 1, p->stex_hi[1], p->tbany ? p->tbm[1] : NULL), g_heapSet };
+     if (!s[0] || !s[1]) { c->nobind = 1; return; }
+     c->nobind = 0;
+-    pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, g_dyn_zero);
++    pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, c->dyn);
+     // This path reads WorkgroupId raw (no base push constants), so it cannot be chunked. Past the device's group
+     // count NAK aborts the whole app inside nak_fill_qmd; refuse the one dispatch loudly instead.
+     if ((g_lim.maxComputeWorkGroupCount[1] && gy > g_lim.maxComputeWorkGroupCount[1]) ||
+diff --git a/plugin/nvmtl_vk.h b/plugin/nvmtl_vk.h
+index e34b55c..a2c6607 100644
+--- a/plugin/nvmtl_vk.h
++++ b/plugin/nvmtl_vk.h
+@@ -68,6 +68,8 @@ typedef struct { void *cb; void *fb; void *pool; void *dset[2]; void *depth_view
+                  void *counter_recording; unsigned counter_error;
+                  nvmtl_sample_pattern sample_pattern;
+                  void **rvs; unsigned nrv, caprv;
++                 uint32_t dyn[2];   /* dynamic offset of each set's address table (binding 640) for the next descriptor bind */
++                 void *tblbuf[2];   /* the address-table page each set's descriptor names (NULL: none written) */
+                } nvk_cmdbuf;
+ int  nvmtl_vk_init(void);
+ int nvmtl_vk_sample_positions_backend(void);

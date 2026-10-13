@@ -1,0 +1,50 @@
+diff --git a/plugin/NVMTLLibraryLoad.m b/plugin/NVMTLLibraryLoad.m
+index c06d68e..bca1117 100644
+--- a/plugin/NVMTLLibraryLoad.m
++++ b/plugin/NVMTLLibraryLoad.m
+@@ -72,7 +72,7 @@ static void nvmtl_translator_cache_tag(const char *path, char *tag, size_t capac
+         nvlog("translator cache: content read failed; using process-private identity");
+     }
+ }
+-static void nvtrace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++static void (nvtrace)(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+ typedef int (*nvmtl_sampler_fn)(const char *, const char *, const char *, uint8_t **, size_t *, char *, size_t);
+ static nvmtl_sampler_fn xlate_sampler;
+ typedef void (*nvmtl_tglen_fn)(const uint32_t *, uint32_t);
+diff --git a/plugin/NVMTLObjects.m b/plugin/NVMTLObjects.m
+index eac2cb6..f915f75 100644
+--- a/plugin/NVMTLObjects.m
++++ b/plugin/NVMTLObjects.m
+@@ -14,7 +14,11 @@
+ #import <objc/runtime.h>
+ #import <objc/message.h>
+ static int nvmtl_trace_on(void);
+-static void nvtrace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++static void (nvtrace)(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++// The arguments of a trace line are only evaluated when the trace is on: the call sites pass things like _vdesc.UTF8String,
++// and as a plain function call that conversion ran on every draw in release builds too (~10% of Chrome's GPU thread in the
++// WebGL aquarium). The parentheses in (nvtrace)(...) name the function itself.
++#define nvtrace(...) ((void)(nvmtl_trace_on() ? ((nvtrace)(__VA_ARGS__), 0) : 0))
+ static unsigned long long nvmtl_global_trace_id(id o) {
+     static char key; static unsigned long long next = 1;
+     @synchronized (o) {
+@@ -991,7 +995,7 @@ static void nvmtl_storage_twins_out(NVMTLCommandBuffer *cb) {
+ static int g_trace_bigonly, g_trace_mute, g_trace_vt;
+ static int nvmtl_trace_on(void) {
+     static uint64_t next; static int on;
+-    uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
++    uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW_APPROX);   // called per draw: the commpage value, no mach_absolute_time
+     static int cap = 2500;
+     if (now >= next) { next = now + 250000000ull; int was = on;
+         // WindowServer cannot see /tmp: the same three files under /private/var/tmp switch the trace on and send it to nvmtl-big.log
+@@ -1006,8 +1010,8 @@ static int nvmtl_trace_on(void) {
+ // scoping by the old w<1000||h<100 rule left no budget for the defocus redraws this trace exists to capture.
+ static int nvtrace_scope(uint32_t w, uint32_t h) { int was = g_trace_mute; g_trace_mute = 0; (void)nvmtl_trace_on();
+     g_trace_mute = g_trace_bigonly && !NVBIG_RANGE(w, h); return was; }
+-static void nvtrace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+-static void nvtrace(const char *fmt, ...) {
++static void (nvtrace)(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++static void (nvtrace)(const char *fmt, ...) {
+     if (!nvmtl_trace_on()) return;
+     if (g_trace_vt) { char b[600]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a); nvbig("T %s", b); g_trace_lines++; return; }
+     char p[96]; snprintf(p, sizeof p, "/tmp/nvmtl-trace-%d.txt", (int)getpid());
