@@ -13,7 +13,15 @@ chk "Metal plugin NVMTLDriver      " "$(sha $M/NVMTLDriver)"            "$(want 
 chk "shader translator             " "$(sha $M/libnvmtl_translate.dylib)" "$(want GOOD_XLATE)"
 chk "Vulkan driver (bindfix)       " "$(sha $B/nvmtl/libvulkan_nouveau.dylib)" "$(want GOOD_VK)"
 chk "H.264 decoder (NVDEC t2d)     " "$(sha $M/libnvdec_h264.dylib)" "1b5d08ba7cb95804e076d0be30c994bc15121ec4c4345f587dc45e34adffe1bf"
+chk "H.264 decoder (t2d, 8-byte)  " "$(sha $M/libnvdec_h264_t2d.dylib)" "$(sed -n 's/^T2D_SRC=.*T2D_SHA=\([0-9a-f]\{64\}\).*/\1/p' $inst | head -1)"
 chk "H.264 encoder (NVENC)         " "$(sha $M/libnvenc_h264.dylib)" "2b231d508b2d886afb8de51b950071b905fbd23d88c635bfda968a0855d28231"
+echo "== nvrm610.conf knobs (the plugin and NVK use the FIRST line of a key; nvguard keeps these in effect)"
+CF=$B/nvmtl/nvrm610.conf
+while read -r line; do [[ $line == *=* ]] || continue; k=${line%%=*}
+  eff=$(awk -v k="$k" '{ l = $0; sub(/^[ \t]+/, "", l); if (l ~ /^#/) next; i = index(l, "="); if (!i) next; key = substr(l, 1, i - 1); sub(/[ \t]+$/, "", key)
+    if (key != k) next; v = substr(l, i + 1); sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v); print key "=" v; exit }' $CF 2>/dev/null)
+  chk "conf ${(r:30:)line}" "${eff:-unset}" "$line"
+done < <(sed -n "s/^printf '%s\\\\n' \(.*\) > \$G\/conf.txt$/\1/p" $inst | tr ' ' '\n')
 echo "== guard"
 [[ -f /Library/LaunchDaemons/local.nvguard.plist ]] && { print "  OK     guard daemon installed"; ok=$((ok+1)); } || { print "  MISSING guard daemon plist"; bad=$((bad+1)); }
 if [[ -f $G/MANIFEST.sha256 ]]; then ( cd $G && shasum -a 256 -c MANIFEST.sha256 >/dev/null 2>&1 ) && { print "  OK     guard snapshot intact"; ok=$((ok+1)); } || { print "  CHANGED guard snapshot does not match its MANIFEST"; bad=$((bad+1)); }

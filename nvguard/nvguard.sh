@@ -9,10 +9,10 @@
 # the bundle's MacOS folder changes (driver reinstall, plugin installer...). For each file: already patched -> nothing;
 # a replaceable build (NullMoth's stock, or a known build that lacks our fixes) -> put the patched copy back; any other
 # build (e.g. a NullMoth update) -> leave it, log it. files.txt: name  sha-of-replaceable-build [more shas...]
-G=/Library/NullMoth/guard
+G=${NVGUARD_DIR:-/Library/NullMoth/guard}
 M=/Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS
-CONF=/Library/GPUBundles/nvmtl/nvrm610.conf
-LOG=/var/log/nvguard.log
+CONF=${NVGUARD_CONF:-/Library/GPUBundles/nvmtl/nvrm610.conf}
+LOG=${NVGUARD_LOG:-/var/log/nvguard.log}
 log() { print -r -- "$(date '+%F %T') $*" >> $LOG; }
 sha() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1; }
 # New inode (copy beside, then rename): overwriting a loaded dylib in place -> "Code Signature Invalid" SIGKILLs.
@@ -33,8 +33,20 @@ while read -r f stocks; do
   else log "$f: unknown build ${cur[1,16]} - left alone (NullMoth update? re-run nvguard install after re-checking the patch)"; bad=1; fi
 done < $G/files.txt
 log "integrity check: $n files, $([[ $bad == 0 ]] && echo 'all match or restored' || echo 'ATTENTION - see lines above')"
+# conf.txt: KEY=VALUE lines that must be in effect. The plugin and NVK take the FIRST non-comment line of a key and ignore later
+# ones, so appending a line is not enough when the key is already there with another value: every line of the key is removed
+# and the wanted one appended. The file is only rewritten (after a dated backup beside it) when the key is not exactly that one line.
+keylines() { awk -v k="$1" '{ l = $0; sub(/^[ \t]+/, "", l); if (l ~ /^#/) next; i = index(l, "="); if (!i) next
+  key = substr(l, 1, i - 1); sub(/[ \t]+$/, "", key); if (key == k) print $0 }' $CONF; }
+bak=
 [[ -f $CONF ]] && while read -r line; do
-  [[ -n $line ]] || continue
-  grep -qx -- "$line" $CONF || { echo "$line" >> $CONF; log "conf: added $line"; }
+  [[ $line == *=* ]] || continue
+  k=${line%%=*}; cur=$(keylines $k)
+  [[ $cur == $line ]] && continue
+  [[ -n $bak ]] || { bak=$CONF.guard-bak.$(date +%Y%m%d-%H%M%S); cp -p $CONF $bak; }   # once per run: the file as found
+  awk -v k="$k" '{ l = $0; sub(/^[ \t]+/, "", l); if (l !~ /^#/) { i = index(l, "="); if (i) { key = substr(l, 1, i - 1); sub(/[ \t]+$/, "", key)
+    if (key == k) next } } print }' $CONF > $CONF.new.$$ && print -r -- "$line" >> $CONF.new.$$ &&
+    chown $(stat -f %u:%g $CONF) $CONF.new.$$ && chmod $(stat -f %Lp $CONF) $CONF.new.$$ && mv -f $CONF.new.$$ $CONF &&
+    log "conf: $line in effect (was: ${${cur:-unset}//$'\n'/ | })" || { rm -f $CONF.new.$$; log "conf: FAILED to set $line"; }
 done < $G/conf.txt
 exit 0
