@@ -3,7 +3,7 @@
 [English](README.en.md)
 
 在 **黑苹果（OpenCore）+ macOS 15.8.1 + RTX 4060 笔记本独显直连** 上，把 [NullMoth NVIDIA 驱动](https://github.com/nullmoth/nvidia-macos-driver)
-（v1.9.0）用起来的一整套补丁、脚本和排错记录：HiDPI、WindowServer 花屏/黑块/卡顿、Chrome/Steam/Electron 渲染错误、
+（内核扩展 v1.9.0，用户态 v1.14.2）用起来的一整套补丁、脚本和排错记录：HiDPI、WindowServer 花屏/黑块/卡顿、Chrome/Steam/Electron 渲染错误、
 远程控制与视频编解码、屏幕亮度、Wi-Fi/蓝牙、触控板、内置声卡等。
 
 > **这是什么 / 不是什么**
@@ -20,24 +20,24 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 
 ## 版本与适用范围
 
-**已验证的组合**：NullMoth **v1.9.0** 的内核扩展与二进制 + 本仓库的补丁；其中插件和翻译器可选 v1.9.0 版或 v1.13.0 版补丁集（作者本机用的是后者）。
+**已验证的组合**：NullMoth **v1.9.0** 的内核扩展与二进制 + 本仓库的补丁；插件和翻译器可选 v1.9.0、v1.13.0 或 **v1.14.2** 版补丁集（作者本机用的是 1.14.2）。
 
 | 层 | 选哪个版本 | 说明 |
 |---|---|---|
-| 插件 NVMTLDriver、翻译器 | `patches/nullmoth-1.13.0/`（推荐）或 `patches/nullmoth-1.9.0/0001`、`0002` | 两套二选一，不要叠加。1.13.0 版已去掉上游已吸收的部分 |
-| 内核扩展 NVRM/NVAccel/NVRMFB | 以 **1.9.0** 为基线（`patches/nullmoth-1.9.0/0003–0005`） | 1.9.0→1.13.0 期间 NVRM 核心源码没有变化，但二进制补丁的偏移量仍需你对着自己的包核对 |
+| 插件 NVMTLDriver、翻译器 | `patches/nullmoth-1.14.2/`（推荐）、`patches/nullmoth-1.13.0/` 或 `patches/nullmoth-1.9.0/0001`、`0002` | 三套选一，不要叠加。新版已去掉上游已吸收的部分；修复 26–29 只在 1.14.2 版里 |
+| 内核扩展 NVRM/NVAccel/NVRMFB | 以 **1.9.0** 为基线（`patches/nullmoth-1.9.0/0003–0006`） | 1.9.0→1.13.0 期间 NVRM 核心源码没有变化，但二进制补丁的偏移量仍需你对着自己的包核对 |
 | NVK / NVDEC / NVENC 字节补丁 | 针对 1.9.0 的二进制 | 脚本带断言，字节对不上会拒绝执行，不会乱写 |
 
 **按你的机器挑修复**（编号见下表）：
 
 | 你的情况 | 适用的修复 |
 |---|---|
-| 任何 NullMoth 支持的 NVIDIA 卡 + macOS 15（用户态，与机型无关） | 3、4、6、7、8、9、10、11、12、13、16、20、22、23 |
+| 任何 NullMoth 支持的 NVIDIA 卡 + macOS 15（用户态，与机型无关） | 3、4、6、7、8、9、10、11、12、13、16、20、22、23、25、26（插件部分）、27、28、29 |
 | 需要特定 NullMoth 版本的二进制（字节补丁/偏移量绑定版本） | 2、5（NVK 部分）、14、15 |
 | 仅 Ada（RTX 40 系）：NVDEC/NVENC 的 t2d 布局 | 14、15 |
 | 取决于你的面板和主板 | 1（HiDPI：面板 ID、刷新率）、17（亮度：DSDT 里的 `_DSM`/`_DOD` 路径） |
 | 仅限同款硬件 | 18（Intel AX211）、19（ELAN0420 I²C 触控板）、24（ALC256 声卡，layout 因机型而异） |
-| 内核扩展，预防性、风险较高 | 21（光标独立提交） |
+| 内核扩展，风险较高 | 21（光标独立提交，预防性）、26 的 NVRMFB 部分（新显存不再 CPU 清零） |
 
 建议顺序：先装用户态（插件、翻译器）并稳定使用；再按需做字节补丁；最后才碰内核扩展。机型相关的几项（1、17、18、19）要先对照自己的硬件，**不要整套照抄**。
 
@@ -49,7 +49,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 2 | 开机后 Dock 等窗口停止刷新，需重启进程 | 零拷贝翻转在启动 60 秒后才热切换 | NVRM 把 `IOSleep(60000)` 改 0，翻转在 WindowServer 首次提交前就绪 | `patches/…/0003`、`patch-nvrm-190.py` |
 | 3 | 界面出现黑块、残影、窗口圆角变方 | WindowServer 往**线性**共享 IOSurface VRAM 渲染图层缓存结果出错 + 过期上传竞争 | 小于阈值的 IOSurface 用私有 tiled 图像（`NVMTL_SURF_SHARE_MINPX`）；纹理一致性补丁 | `patches/…/0001`（`per-fix/stale-texture-fix`, `surface-guard-diag`） |
 | 4 | WindowServer 占 75–90% CPU、掉帧 | 每次 IOSurface 内容变化做同步 CPU 拷贝+等 fence | 异步上传 + 主机指针导入 | `per-fix/surfin-async.patch` |
-| 5 | Chrome 变成软件合成 | ANGLE 在 NVIDIA 上禁用 Metal；GPU 沙箱拒绝 `/dev/null` 写入使 NVK 连接失败 | 环境变量 `ANGLE_FEATURE_OVERRIDES_DISABLED=disableMetalOnNvidia` + `libvulkan_nouveau.dylib` 2 字节补丁 + `hw.memsize` 改写 | `codec-vulkan/vulkan/` |
+| 5 | Chrome 变成软件合成 | ANGLE 在 NVIDIA 上禁用 Metal；GPU 沙箱拒绝 `/dev/null` 写入使 NVK 连接失败 | 环境变量 `ANGLE_FEATURE_OVERRIDES_DISABLED=disableMetalOnNvidia` + `libvulkan_nouveau.dylib` 2 字节补丁（`hw.memsize` 改写在 1.14.2 补丁集下由插件兜底取代，见 27） | `codec-vulkan/vulkan/` |
 | 6 | Chrome 满屏闪烁 | `waitUntilScheduled` / scheduled 回调在 GPU 完成前就返回，IOSurface 未发布 | 等到完成再回调 | `per-fix/scheduled-wait.patch` |
 | 7 | Chrome 窗口偶发整块空白一下 | ANGLE WebGL 着色器翻译失败（`air.get_num_samples` 需要 `raster_sample_count`），GPU 进程被重启 | 翻译器改为 SpecConstant + 插件下发 `VkSpecializationInfo` | `per-fix/raster-samples.patch` |
 | 8 | 视频悬浮预览纯绿、窗口对角撕裂 | 插件从不持有 IOSurface use count，Chromium 回收了仍在被 GPU 使用的 buffer | 命令缓冲持有/释放 use count | `per-fix/surface-usecount.patch` |
@@ -58,7 +58,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 11 | Cmd-Tab/拖动时 WindowServer 超 165Hz 帧预算 | self-bind guard 每次采样前复制整个 28 MB 帧缓冲 | 对 `fixed_frag_*` 走“结束 pass→屏障→重启→自采样”，不拷贝（>6 ms 帧 536 → 6） | `per-fix/selfbind-fetch.patch` |
 | 12 | Steam / CEF 界面闪烁、错位 | Apple GL-on-Metal 的 MSAA pass 设置了全零采样位置，插件无后端直接拒绝整个 pass | 无采样位置后端时回退到标准采样图案 | `per-fix/gl-sample-positions.patch` |
 | 13 | 截图缩略图 / 预览里大图变成一块块纯色 | **翻译器**：CI Lanczos 的 stitched AIR 中，调用方晚于接收指针参数的 helper 被发射，丢了常量偏移 | “调用者优先”的稳定拓扑重排 | `per-fix/translator-callers-first.patch` |
-| 14 | 播放视频有 16px 竖条纹（App Store 等） | NVDEC H.264 以 Blackwell 的 detile mode 1 解，Ada 实为 t2d GOB（mode 0） | `libnvdec_h264.dylib` 1 字节补丁 | `codec-vulkan/nvdec/` |
+| 14 | 播放视频有 16px 竖条纹（App Store 等）；H.264 硬解慢、占 CPU | NVDEC H.264 以 Blackwell 的 detile mode 1 解，Ada 实为 t2d GOB（mode 0）；1.13 起插件找 `libnvdec_h264_t2d.dylib` 却从未安装；detile 每次拷 1 字节、等待时自旋 | 1 字节补丁；以 t2d 名安装；8 字节 detile（4K 26.8 → 12.6 ms/帧）+ 休眠等待（CPU 4K 8.0 → 3.7 ms/帧） | `codec-vulkan/nvdec/` |
 | 15 | UU 远程被控端卡在“传输画面中”/ 花屏 / 慢 | NVENC：NotSync 标志、bw8/bw16 与 t2d 布局不符、清零 29 MB 显存走 BAR、无码率控制 | H.264 二进制补丁（t2d 循环、NotSync、AVX 清零、逐帧 QP 码控） | `codec-vulkan/nvenc/` |
 | 16 | UU 作为控制端首帧闪退 | viewport 深度范围越界传给 NVK 触发 `assert(0<=zmin<=1)` | 夹紧 znear/zfar | `per-fix/viewport-depth-clamp.patch` |
 | 17 | 亮度滑块 / Fn 亮度键 / 电池都没有 | NullMoth NVRM 把 `nv_acpi_dsm_method` / `_dod_method` 等桩掉，GSP 认不出面板 | `NVDSM`（Lilu 插件）补上 `_DSM`/`_DOD`/NVKMS 背光；`NVRMFB` 把面板标为内置并出 `AppleBacklightDisplay`；重新启用真 EC0 | `backlight/`、`patches/…/0004` |
@@ -70,6 +70,10 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 23 | Photo Booth 预览纯黑（拍照正常）；compute / Core Image 往 CAMetalLayer 画不上 | `framebufferOnly=NO` 的 drawable 用途是 `Unknown(0)`，Apple 驱动当“全部用途”，插件当“没有”→ ShaderWrite 被拒 | 把 0 读作 ShaderRead、ShaderWrite、RenderTarget（`NVMTL_UNKNOWN_USAGE=0` 关闭） | `patches/nullmoth-1.13.0/per-fix/unknown-usage-all.patch`、`hidpi/catest/drawable-writes.swift` |
 | 24 | 内置麦克风 / 扬声器不出现 | 没装 AppleALC；声卡是 ALC256（子系统 `1558:25E1`） | AppleALC + `alcid=11`，脚本改 ESP 的 `config.plist` | `audio/` |
 | 25 | Claude 桌面端终端面板没有文字（xterm.js WebGL）；`sampler2D u[N]` 数组的 WebGL 页面画不出 | **翻译器**不支持采样器数组、纹理数组只保住元素 0；**插件**描述符槽位掩码只标数组的第一个槽位 | 翻译器把数组降级为描述符数组并解析元素指针；插件按数组长度标全部槽位。⚠ 放进 GPUBundles 的 dylib 必须 ad-hoc 签名，否则 WindowServer 库验证拒绝 → 崩溃循环 | `patches/nullmoth-1.13.0/per-fix/sampler-array-{plugin,translator}.patch`、`hidpi/catest/sarray.m`、`hidpi/tests/lv-test.sh` |
+| 26 | B 站 4K 视频开弹幕掉帧、视频丢帧（智能防挡更明显） | 每帧新建 12 MB 暂存缓冲；`waitUntilScheduled` 等到 GPU 完成；提交被上一帧的发布挡住；每帧新 IOSurface 的导入 + CPU 清零显存 | 暂存缓冲复用、提交即返回、提前提交、渲染影子复用、NVRMFB 抽样为零即不清（200 条弹幕 86–92 → 165 fps，丢帧 15% → 0）。智能防挡让 WindowServer 上屏减半是 Chrome 的做法，见文档 | `patches/nullmoth-1.14.2/per-fix/`、`patches/nullmoth-1.9.0/0006`、`hidpi/catest/danmaku/` |
+| 27 | Firefox 没有硬件加速 | Firefox 的 GPU 沙箱连读 `/dev/null` 都拒绝，`hw.pagesize` 也被拒 | 回移植上游 1.14.5/1.14.6：管道当占位 fd、`host_info` 取内存大小；NVK 去掉 `hw.memsize` 改写（两者一起换） | `per-fix/upstream-sandbox-unity-backport.patch`、`codec-vulkan/vulkan/mk-nomem-190.py`、`hidpi/catest/ffsandbox.m` |
+| 28 | Unity 类程序偶发卡死 | 程序在 `@synchronized(命令缓冲/队列)` 里提交并等待，插件完成时要拿同一把锁 | 回移植上游 1.14.5：插件改用自己的类级锁 | 同上、`hidpi/catest/unitylock.m` |
+| 29 | WebGL 大量绘制（Aquarium）帧率低 | 每次 draw 新建描述符集；发行版仍在求值跟踪参数；采样纹理的片元着色器缓冲走描述符 | 只变字节环时复用描述符集（动态偏移地址表）；跟踪参数按需求值；**翻译器**把剩余缓冲并到地址表（3.13 → 1.56 µs/draw，5000 条鱼 41 → 73 fps） | `per-fix/{nvtrace-release,descriptor-table-reuse,translator-table-merge}.patch`、`hidpi/catest/drawbench.m` |
 
 每一项的详细分析、验证方法和注意事项见 **[docs/fixes.md](docs/fixes.md)**。
 
@@ -78,6 +82,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 ```
 patches/nullmoth-1.9.0/   对上游 v1.9.0 的累计补丁（plugin / translator / NVRM / NVRMFB）
 patches/nullmoth-1.13.0/  重新整理到上游 v1.13.0 之上的插件 / 翻译器补丁（内核扩展仍以 1.9.0 为基线）
+patches/nullmoth-1.14.2/  重新整理到上游 v1.14.2 之上的插件 / 翻译器补丁（当前推荐，含修复 26–29）
   per-fix/                逐项修复的独立 diff（便于阅读，各自以当时的基线生成，不保证按序可叠加）
 patches/voodoo/           VoodooGPIO 补丁
 patches/itlwm/            laobamac/itlwm（AirportItlwm）开机初始化自愈补丁
@@ -91,7 +96,7 @@ trackpad/                 VoodooI2C + PS2 按键映射
 audio/                    内置声卡（AppleALC + alcid）安装/回滚脚本
 nvguard/                  “驱动被重装后自动把补丁放回去”的 LaunchDaemon（参考实现）
 efiguard/                 “ESP 上的修复被丢了就自动补回”的 LaunchDaemon（可在 ESP 副本上演练）
-tools/                    备份、NVRM 运行时旋钮、开机 Wi-Fi 日志抓取（wifi-bootlog）
+tools/                    备份、NVRM 运行时旋钮、开机 Wi-Fi 日志抓取（wifi-bootlog）、USB 掉线记录（usb-watch）
 docs/                     详细文档
 ```
 

@@ -1,6 +1,6 @@
 # 修复详解
 
-编号与 [README](../README.md) 的表格一致。除特别说明外，环境为 macOS 15.8.1、NullMoth v1.9.0、RTX 4060 Laptop（Ada）。
+编号与 [README](../README.md) 的表格一致。除特别说明外，环境为 macOS 15.8.1、NullMoth v1.9.0 内核扩展 + v1.14.2 用户态（插件、翻译器、NVK）、RTX 4060 Laptop（Ada）。
 “插件”= `/Library/GPUBundles/NVMTLDriver.bundle`（Metal 驱动），“翻译器”= 其中的 `libnvmtl_translate.dylib`（Apple AIR → SPIR-V），
 “NVK”= `libvulkan_nouveau.dylib`。
 
@@ -101,6 +101,48 @@
 - 测试：`hidpi/catest/drawable-writes.swift`（渲染 pass / compute / blit / Core Image 四种写法，每行必须是 OK）。
 - 附带：macOS 15 的 Photo Booth 在 iPhone 在附近时默认选连续互通相机，要手动切到内置/外接摄像头才有画面，这不是驱动问题。
 
+### 26. B 站 4K 视频 + 大量弹幕掉帧（视频帧上传、提交等待、每帧新表面）
+- 现象：B 站 4K 视频开弹幕后掉帧、视频丢帧；开“智能防挡弹幕”更明显。没有弹幕时 Chrome 把视频直接交给 Core Animation，GPU 进程几乎不动；
+  有了覆盖层，Chrome 要自己合成视频，每一帧都牵动插件的上传、提交和表面导入路径。逐个找到的开销：
+  1. **每帧新建 12 MB 暂存缓冲**：每个解码出的 NV12 帧都被包进新的 MTLTexture，插件的异步上传（第 4 项）每帧新建再释放 8 MB + 4 MB 暂存缓冲。
+     改为按尺寸回收复用（`per-fix/surfin-stage-reuse.patch`）：4K 每帧主线程 CPU 约 10 → 2.8 ms（`hidpi/catest/upbench.m`），合成测试 200 条弹幕 86–92 → 165 fps、视频丢帧 15% → 0。
+  2. **`waitUntilScheduled` 等到 GPU 完成**：第 6 项的闪烁修复把它改成了等完成，后来查明那次闪烁的真正原因是翻译器（第 9 项），
+     所以 `NVMTL_SCHEDULED_WAIT=0` 让它提交后就返回（**scheduled 回调仍在完成时触发**，那部分不能动，`NVMTL_SCHED_AT_COMPLETION=0` 会满屏闪）。
+     真实 B 站 4K：128–160 → 165 fps，Chrome GPU 进程 CPU 约 116% → 34%。
+  3. **提交被前一帧的发布挡住**：执行线程只在两次阻塞等待之间做“提前提交”，导致 Chrome 等的那帧要等上一帧 GPU 完成 + IOSurface 发布。
+     改为提交时就在独立队列上做（`per-fix/eager-submit.patch`，`NVMTL_GSUB_EAGER=0` 关闭）：`schedlat` 2.5 → 0.01 ms；智能防挡下每 10 秒 >12 ms 的帧 132 → 6。
+  4. **自旋等待**：`NVRM_EVENT_WAIT=1`（上游旋钮）让普通进程也用事件等待 GPU，Chrome GPU 进程 CPU 再降约 10%。
+  5. **每帧一个新 IOSurface**（智能防挡的遮罩层）：每个新表面第一次被当纹理用时要导入显存（约 2 ms）。
+     - 插件：死掉的纹理留下的 tiled 渲染影子按尺寸/格式“停车”复用（`per-fix/rsh-park.patch`，`NVMTL_RSH_PARK=0` 关闭）：`newsurf` 每个表面 CPU 1.48 → 0.93 ms。
+     - 内核：NVRMFB 给每块新显存先用 CPU 经 BAR 清零（约 2.5 ms / 7.6 MB）。RM 的 scrub-on-free 已经用拷贝引擎清过（抽查约 2.1 万次分配，非零 0 次），
+       所以改为“抽样为零就不再清”（`patches/nullmoth-1.9.0/0006-nvrmfb-vram-noclear.patch`，`sysctl debug.nvrmfb_clear_mode`：0 原样、2 抽样为零即跳过=默认），弹幕时省约 10% 个核。
+  6. `NVMTL_SURF_SHARE_MINPX=0`（所有窗口大小的 IOSurface 走共享显存）：智能防挡下 WindowServer CPU 80% → 55%，最长卡顿 42 → 18 ms；本机没有再出现第 3 项的黑块。
+- 当前 conf：`NVMTL_SCHEDULED_WAIT=0`、`NVRM_EVENT_WAIT=1`、`NVMTL_SURF_SHARE_MINPX=0`（`nvguard/` 会保持它们生效）。
+- **仍然存在的限制（不是驱动的问题）**：
+  - 开智能防挡后，Chrome 把弹幕层做成每帧一个新 IOSurface 的 CALayer，**WindowServer 实际上屏帧数减半**：合成测试 200 条弹幕，不开遮罩上屏 145–155 fps，开遮罩 85–94 fps（Chrome 自己的 rAF 一直是 165）。
+    换了三套驱动结果一样。Chrome 启动参数 `--disable-features=CoreAnimationRenderer` 能回到约 140 fps，但不开遮罩和滚动网页时 CPU 更高，是取舍而不是默认。
+  - 同屏弹幕到 400–500 条时，瓶颈在 Chrome 自己（渲染进程排版 + 合成），驱动能做的有限；调低弹幕密度最有效。
+- 测试：`hidpi/catest/danmaku/`（`dm.html` 合成弹幕页 + 遮罩，`gen.swift` 生成 4K 测试视频，`tools/synthws.sh` / `biliws.sh` 同时记录 Chrome 帧率和 **WindowServer 实际上屏帧数** `wsframes.sh`），
+  `upbench.m`、`schedlat.m`、`chainstress.m`、`newsurf.m`、`rparktest.m`。
+
+### 28. Unity 类程序卡死（在 `@synchronized(命令缓冲/队列)` 里提交并等待）
+- 现象：Unity 编辑器/游戏等程序偶发整个卡死。它们会在 `@synchronized(commandBuffer)` 或 `@synchronized(queue)` 里调用 `commit` + `waitUntilCompleted`，
+  而插件的执行线程完成命令缓冲时也要拿同一个对象的锁 → 互相等待。
+- 修复：回移植上游 1.14.5 的做法——插件内部改用自己的类级锁，不再锁用户可见的对象，容量计数原子释放（`per-fix/upstream-sandbox-unity-backport.patch` 的一部分）。
+- 测试：`hidpi/catest/unitylock.m`（旧插件会卡住，新插件 PASS）。
+
+### 29. WebGL 大量绘制（每个物体一次 draw，如 WebGL Aquarium）帧率低
+- 现象：WebGL Aquarium 5000 条鱼只有 41 fps、20000 条 13 fps；Chrome GPU 进程一个线程 100%，其中 76% 在插件的渲染编码器里，每次 draw 约 4–5 µs CPU。
+- 根因与修复：
+  1. 发行版里 `nvtrace()` 是普通函数，参数（如 `_vdesc.UTF8String`）每次 draw 都会求值，约占 10%：改成宏，只在开了跟踪时求值（`per-fix/nvtrace-release.patch`）。
+  2. 每次 draw 都新分配并写一个描述符集（约 25%）：当两次 draw 之间只变了经地址表读取的绑定（`setVertexBytes`/`setFragmentBytes` 移动字节环），
+     就重新绑定上一个描述符集，地址表写到同一页的新位置、以动态偏移传入（`per-fix/descriptor-table-reuse.patch`，`NVMTL_TABLE_REUSE=0` 关闭）。
+     同时修正：绑定掩码把 bindless 堆（set 2 binding 0）误算成缓冲槽 0，导致所有采样纹理的着色器都像在用描述符读缓冲 0。
+  3. **翻译器**：已经带地址表的模块（采样纹理的片元着色器，表项是 `uvec2`）原样返回，其余缓冲仍走描述符，描述符集无法复用。
+     现在把剩余的存储缓冲也降到这张表上（`per-fix/translator-table-merge.patch`，`NVMTL_NO_TABLE_MERGE=1` 关闭）；本机 4639 个缓存模块：2580 个不变、2059 个合并，全部能被 NVK 编译。
+- 结果：`hidpi/catest/drawbench.m`（ANGLE 式结构体 uniform）3.13 → 1.56 µs/draw，图像逐字节一致；Aquarium 5000 条 41 → 73 fps、10000 条 24 → 39、20000 条 13 → 21。
+- 注意：比较修改前后的 GPU 输出要在**相同的着色器缓存状态**下进行（见 docs/pitfalls.md）。
+
 ---
 
 ## 三、翻译器（metal2vulkan 衍生）
@@ -144,9 +186,18 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 2. GPU 沙箱拒绝 `file-write-data /dev/null`，而 NVK 的 `nvrm_xnu_open` 为占位 fd 调 `open("/dev/null", O_RDWR)`，沙箱起来后所有 NVRM 连接失败。另外沙箱拒绝 `hw.pagesize`，Mesa 的 `os_get_total_physical_memory` 得到 -1。
    - 修复：`libvulkan_nouveau.dylib` 2 字节补丁（open 标志 `0x1000002 → 0x1000000`，即 `O_RDWR|O_CLOEXEC` → `O_RDONLY|O_CLOEXEC`，偏移 1.0.10 为 0x12bfc8 / 0x12c0db），并把 `os_get_total_physical_memory` 重写成 `sysctlbyname("hw.memsize")`。
    - 脚本：`codec-vulkan/vulkan/vk-devnull.sh`、`vk-bindfix.sh`、`mk-bindfix.py`；1.9.0 版本的偏移用 `mk-bindfix-190.py` 重新推导。
+   - 用 1.14.2 补丁集（含第 27 项的插件兜底）时，`hw.memsize` 改写不再需要，用 `mk-nomem-190.py` 去掉它；`/dev/null` 的只读补丁保留。
 - 调试备忘：`DYLD_INSERT_LIBRARIES` 进不了 Chrome 的 GPU 助手（hardened runtime）；lldb 也附不上去。
 - **Chrome 的 flags**：本机上 Graphite 与 GPU 栅格在早期构建下都渲染错误（半个四边形全黑 / 曲线路径缺失）。翻译器修复（第 9、13 项）和插件修复之后，作者重新打开了 GPU 栅格并保持 Graphite 关闭。排错时的稳定组合是 `chrome://flags` → `#skia-graphite` Disabled，必要时 `#enable-gpu-rasterization` Disabled。
 - Electron 应用也会吃到这个环境变量；有问题时 `launchctl unsetenv ANGLE_FEATURE_OVERRIDES_DISABLED`。
+
+### 27. Firefox 没有硬件加速（GPU 沙箱连读 `/dev/null` 都不允许）
+- 现象：Firefox 的 WebGL、合成全是软件渲染，`about:support` 里没有 Metal 设备。
+- 根因：Firefox 的 GPU 进程沙箱（`SandboxPolicyGPU.h`）比 Chrome 更严，连 `file-read` `/dev/null` 都拒绝，第 5 项把 NVK 的占位 fd 改成只读打开仍然失败；
+  同时 `sysconf(_SC_PHYS_PAGES)` 需要的 `hw.pagesize` 也被拒绝。
+- 修复：回移植上游 1.14.5 / 1.14.6 的插件兜底——连 `/dev/null` 都打不开时用一根管道的读端当占位 fd；物理内存大小改由插件用 `host_info` 回答（重绑 `sysconf`）。
+  因此 NVK 不再需要我们的 `hw.memsize` 改写：`codec-vulkan/vulkan/mk-nomem-190.py` 把那段恢复成原样。**两者必须一起换**：旧插件配新 NVK，在 Chrome 沙箱里会拿不到设备（“Failed to query total system memory”）。
+- 测试：`hidpi/catest/ffsandbox.m` 用 Firefox 的沙箱规则启动 Metal blit + CGL 清屏并回读（需要自己从 Firefox 源码导出 `SandboxPolicyGPU.h` 的规则存为 `ffsandbox-gpu.sb`，MPL 代码不随本仓库分发）。旧组合 0/2，新组合 2/2。
 
 ---
 
@@ -158,6 +209,12 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - `libnvdec_h264.dylib` 的 `emit_picture` 以 mode 1 调 `nvd264_detile`（`mov $1,%edx`，0x163d）；Ada 写出的是 mode 0。**0x163e 处 `01 → 00`** + ad-hoc 重签名。
 - 亮度 PSNR：补丁前 17.5 dB，补丁后 480p/720p/1080p/2160p 逐比特一致。HEVC NVDEC 本来就是 t2d，无需改。
 - `codec-vulkan/nvdec/nvdec-t2d.sh install|restore`；测试程序 `dectest.swift <dylib> [W H]`（进程内寄存器、与 Apple 软解对比）。
+- **1.13 起的插件在非 Blackwell 卡上加载的是 `libnvdec_h264_t2d.dylib`**（上游给 mode 0 解码器起的名字），而它从来没被安装 → H.264 硬解**根本没注册**（`hidpi/catest/vtreg.m` 检查）。
+  把我们的 t2d 构建以这个名字放进去（`nvguard/` 会补上缺失的文件）。
+- **速度**：
+  - `nvd264_detile` 每次循环只拷 1 字节：`mk-detile8.py` 改成 8 字节，4K 每帧 26.8 → 12.6 ms，1080p 6.3 → 2.8 ms，逐比特一致。
+  - `decode_pending` 在 `clock_gettime` 上自旋整个解码过程：`mk-sleep.py` 改成像 HEVC 解码器那样每 50 µs `mach_wait_until` 一次，
+    每帧 CPU 4K 8.0 → 3.7 ms、1080p 2.45 → 0.86 ms，耗时不变、输出逐比特一致（`decbench.swift`）。安装/回滚：`codec-vulkan/nvdec/nvdec-sleep.sh`。
 
 ### 15. NVENC（UU 远程被控端）
 1. **NotSync**：关键帧被设置 `kCMSampleAttachmentKey_NotSync=false`，UU（WebRTC 的 libstreamer）只检查 key 是否**存在** → 永远看不到关键帧，卡在“传输画面中”。10 字节补丁（H.264 0x1665 / HEVC 0x175c）。
@@ -268,6 +325,18 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - 上游 1.13 已吸收的内容（视口深度夹紧等）不再出现在补丁里。
 - 额外一处本地改动：1.13 只在 Blackwell 上注册 NVENC，Ada 上我们的 NVENC 补丁（修复 15）会被绕开，所以插件默认在所有 GPU 上注册，设置环境变量 `NVMTL_NVENC_BLACKWELL_ONLY` 才恢复上游行为。
 - **没有**升级内核扩展。1.9.0→1.13.0 期间 NVRM 核心源码没有变化，变化的只有 NVAccel（无头 GPU、Intel 内置屏，仅用于面板不在独显上的笔记本）、NVRMFB（光标，已移植为修复 21；另有“多列出分辨率”，未移植）、新增的 NMIntelFB 与 NMHDA。对独显直连的机器升级没有收益，所以内核扩展仍以 1.9.0 为基线；若要升级，NVRM 与 NVK 的字节补丁偏移量需针对 1.13.0 的二进制重新核对。
+
+## 九（续）、1.14.2 用户态补丁集（当前推荐）
+
+`patches/nullmoth-1.14.2/` 是插件和翻译器的全部本地修改整理到**上游 v1.14.2** 之上的差异（`0001-plugin.patch` 含 `build/build_plugin.sh`，`0002-translator.patch`）。
+已验证：在原版 v1.14.2 上干净应用，应用后的源码与作者实际在用的构建一致（只有注释里的路径不同），插件可编译。
+- 合并时的取舍：翻译器的 helper 发射顺序用上游的 raw-cursor 方案（取代第 13 项的“调用者优先”）；`begin_pass` 用上游的采样位置兜底（取代第 12 项）；
+  blit 用上游的覆盖同步（#98）并保留我们的渲染影子；NVENC 仍在所有 GPU 上注册。
+- **陷阱**：上游 wrapper 的 `apply_rsc` 默认把 `raster_sample_count` 设为 `Some(1)`，会绕过第 7 项的特化常量；补丁里改为只在插件给出采样数时才写死。
+- `per-fix/` 是 1.14.2 之后各项的单独提交（`surfin-stage-reuse`、`eager-submit`、`rsh-park`、`upstream-sandbox-unity-backport`、`nvtrace-release`、`descriptor-table-reuse`、`translator-table-merge`），
+  便于阅读；其中 `eager-submit`、`translator-table-merge`、`upstream-sandbox-unity-backport` 能单独打在原版 v1.14.2 上，其余依赖前面的本地修改，请直接用 `0001`/`0002`。
+- 编译插件时要链接 `-framework IOKit -framework CoreVideo`（构建脚本已更新）。内核扩展仍以 1.9.0 为基线（`0003–0006`）。
+- 上游 1.14.3–1.14.7 的其余改动（AM5 平台、复制路径闪烁、核显面板、ANGLE 自动开启等）对独显直连 + 零拷贝翻转的机器没有收益，未合入。
 
 ## 十、ESP 守护（efiguard）
 

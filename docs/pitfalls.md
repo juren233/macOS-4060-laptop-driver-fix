@@ -24,7 +24,16 @@
 - UU 的信号处理会把崩溃全部变成 SIGKILL；要看真正的崩溃需 get-task-allow 重签名后进 lldb。
 - 在 Claude Code 的 `!` 命令里没法输入 sudo 密码；需要 root 的脚本请在 Terminal.app 里跑。
 
+- **看流畅度要量 WindowServer 实际上屏的帧数，不是网页里的 `requestAnimationFrame`**。智能防挡弹幕时 Chrome 的 rAF 一直是 165 fps，实际上屏只有约 90。
+  不需要录屏权限的办法：WindowServer 每次更新屏幕都会打一条 CoreDisplay 调试日志（“using last created GPU Gamma Table”），数它的时间戳即可（`hidpi/catest/danmaku/tools/wsframes.sh`）。
+- **比较修改前后的 GPU 输出，要在相同的着色器缓存状态下**：同一个程序冷缓存和热缓存的结果可能差 1 个色阶（旧驱动也一样）。换了翻译器后缓存键会变，“修改后”那次往往是冷的。
+  用 `CFFIXED_USER_HOME` 给两边各指一个新目录，冷对冷、热对热地比（`~/Library/Caches/nvmtl` 跟着变）。
+- **往 Chrome 里注入测试插件**（`plugshim`）：未签名的 `DYLD_INSERT_LIBRARIES` 库会被静默忽略；GPU 沙箱不允许从 `/tmp` 加载插件，GPU 进程会退回软件渲染（帧率掉到 20–40，这组数据作废）。
+  要 ad-hoc 签名，并给测试 Chrome 加 `--disable-gpu-sandbox`，两边条件一致地比。
+- **别常开 debug 级的 `log stream`**（哪怕带过滤条件）：它让所有进程都开始产出调试日志（本机每秒约 1700 条），`log` + `diagnosticd` 平时约 9% CPU、播视频时约 30%。
+  要抓事件前后的日志，事后 `log show --start …` 就够了（`tools/usb-watch/` 就是这样做的）。
+
 ## 机器/版本相关
-- 本仓库所有二进制补丁都绑定 **NullMoth 1.9.0 / 1.0.10** 的具体构建，升级后偏移会变；脚本会断言，报错就是该重新推导而不是硬改。
+- 本仓库所有二进制补丁都绑定 **NullMoth 1.9.0 / 1.0.10** 的具体构建（NVK 的 `mk-nomem-190.py` 和 NVDEC 的 `mk-detile8.py`、`mk-sleep.py` 也一样），升级后偏移会变；脚本会断言，报错就是该重新推导而不是硬改。
 - macOS 更新可能破坏 kext / 插件；ESP 上的修复由 `efiguard/` 守护（见 docs/fixes.md 第十节），NVRAM 里的 `csr-active-config` 不在任何守护范围（`nvguard/verify.sh` 会提示）。
 - Homebrew 7.x 起不再支持 Intel macOS（官方安装脚本在 x86_64 直接退出，也没有 bottle）：手动 `git clone Homebrew/brew` 到 `/usr/local/Homebrew` 并链接 `/usr/local/bin/brew`，之后一切源码编译。
