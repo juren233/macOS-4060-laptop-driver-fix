@@ -4,8 +4,8 @@
 
 | 内容 | 来源 | 许可 |
 |------|------|------|
-| `patches/nullmoth-1.9.0/0001`、`0003`、`0004`、`0005`、`patches/nullmoth-1.13.0/0001` 及 `per-fix/` 中的插件/内核扩展补丁 | 对 <https://github.com/nullmoth/nvidia-macos-driver> v1.9.0 的修改 | PolyForm Noncommercial 1.0.0（**仅限非商业**）<br>Required Notice: Copyright (c) 2026 NullMoth Systems (https://nullmothsystems.com) |
-| `patches/nullmoth-1.9.0/0002-translator.patch`、`patches/nullmoth-1.13.0/0002-translator.patch`、`per-fix/translator-callers-first.patch` | 对 metal2vulkan（Anees Iqbal）衍生的翻译器的修改 | LGPL-3.0-or-later |
+| `patches/nullmoth-1.9.0/0001`、`0003`–`0006`、`patches/nullmoth-1.13.0/0001`、`patches/nullmoth-1.14.2/0001` 及 `per-fix/` 中的插件/内核扩展补丁 | 对 <https://github.com/nullmoth/nvidia-macos-driver> v1.9.0 / v1.13.0 / v1.14.2 的修改 | PolyForm Noncommercial 1.0.0（**仅限非商业**）<br>Required Notice: Copyright (c) 2026 NullMoth Systems (https://nullmothsystems.com) |
+| 各目录的 `0002-translator.patch`，`per-fix/` 中的 `translator-callers-first.patch`、`sampler-array-translator.patch`、`translator-table-merge.patch` | 对 metal2vulkan（Anees Iqbal）衍生的翻译器的修改 | LGPL-3.0-or-later |
 | `patches/voodoo/` | 对 acidanthera/VoodooGPIO 的修改 | 沿用上游（GPL-3.0 / BSD 类） |
 | `patches/itlwm/` | 对 laobamac/itlwm（OpenIntelWireless itlwm 分支）的修改 | 沿用上游（GPL-2.0） |
 | `backlight/NVDSM`、`wifibt/BTLEFix` | 作者原创，依赖 Lilu | GPL-3.0（见 [LICENSE](LICENSE)） |

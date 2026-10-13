@@ -33,7 +33,7 @@
 
 ## 二、WindowServer / 插件（NVMTLDriver）
 
-补丁在 `patches/nullmoth-1.9.0/0001-plugin.patch`（累计），逐项独立 diff 在 `per-fix/`。
+当前补丁在 `patches/nullmoth-1.14.2/0001-plugin.patch`（累计；1.9.0、1.13.0 基线的旧版在各自目录），逐项独立 diff 在各目录的 `per-fix/`。
 
 ### 3. 黑块 / 残影 / 圆角变方
 排查走了很长的路，结论按层记录：
@@ -50,21 +50,22 @@
 
 ### 4. WindowServer 高 CPU / 掉帧（异步 surface-in）
 - `spindump WindowServer 10`：主线程 61% 在 `nvmtlSurfaceIn → nvmtl_vk_image_write`（CPU memmove + 缺页），11% 同步 `vkWaitForFences`。
-  原因是第 3 项把所有小表面和每个 NV12 视频帧变成私有图像，每次 seed 变化都整块 CPU 拷贝并等 GPU。
-- 修复 `surfin-async.patch`：上传不等待、按队列顺序提交；用 `vkGetFenceStatus` + 16ms 定时器回收，最多 48 个在途；重复上传直接导入 IOSurface 主机指针（预算 `NVMTL_SURFIN_IMPORT_MB`，默认 256）。
+  原因是第 3 项把所有小表面和每个 NV12 视频帧变成私有图像，每次 seed 变化都整块 CPU 拷贝并等 GPU。（现在 `MINPX=0`，窗口大小的表面走共享显存，私有图像主要剩视频帧这类。）
+- 修复 `surfin-async.patch`：上传不等待、按队列顺序提交；用 `vkGetFenceStatus` + 16ms 定时器回收，最多 48 个在途；重复上传可改为让 GPU 直接读 IOSurface 的内存页（`NVMTL_SURFIN_IMPORT_MB`，**默认 0 = 关闭**：GPU 稍后才读这些页，会和 Chrome 改写栅格块竞争，滚动时闪烁；写一个 MB 数可开启）。
   只对私有图像异步；共享 VRAM 上的上传仍同步（VRAM tag 表示数据已就绪）。关闭开关：`NVMTL_SURFIN_ASYNC=0`。
 - 测试：`hidpi/catest/surfasync.m`。
 
 ### 6. 闪烁（scheduled 回调时机）
 - Chromium 在提交 CA 事务前调用 `waitUntilScheduled`；WindowServer 的 NVK 通道与 Chrome 的无序，私有图像表面只在**完成**时发布。
-- `waitUntilScheduled` 改为等到完成（`NVMTL_SCHEDULED_WAIT=0` 恢复）；`addScheduledHandler` 回调也改在完成时执行（`NVMTL_SCHED_AT_COMPLETION=0` 恢复）。后者治好了 Electron（大窗口 2432×1600 IOSurface）的交替旧帧。
+- `addScheduledHandler` 回调改在完成时执行（`NVMTL_SCHED_AT_COMPLETION=0` 恢复），治好了 Electron（大窗口 2432×1600 IOSurface）的交替旧帧。**这一半必须保留**（关掉会满屏闪）。
+- 当时还把 `waitUntilScheduled` 改为等到完成（插件默认仍是这样）。后来查明 Chrome 那次闪烁的真因是翻译器（第 9 项），这个等待只是让 Chrome GPU 进程空等，作者的 conf 用 `NVMTL_SCHEDULED_WAIT=0` 关掉了（见第 26 项）。
 
 ### 8. IOSurface use count
 - Apple 驱动在 GPU 工作引用 surface 期间保持 `IOSurfaceIsInUse` 为真，Chromium 的 buffer queue / CVPixelBufferPool 据此回收。插件从不持有 → 视频预览（HEVC 640×360 经 VideoToolbox）纯绿、窗口对角撕裂（新旧帧混合）。
 - 命令缓冲持有的 `nvmtl_resref` 在 0→1 加 use count，→0 减；每纹理 `_useLk/_useHeld`。旋钮 `NVMTL_SURF_USECOUNT=0`。测试 `catest/usecount.m`（原版 FAIL，新版 PASS）。
 
 ### 10. 线性 RT 的 tiled 渲染影子（Chrome 滚动）
-- 窗口 IOSurface ≥ `MINPX` 时是 pitch-linear 的共享 VRAM 别名，一帧约 11 个 Graphite pass、每个约 1 ms，且与 backdrop 模糊链交错。
+- 走共享显存的窗口 IOSurface（≥ `MINPX`；作者现在 `MINPX=0`，即全部）是 pitch-linear 的共享 VRAM 别名，一帧约 11 个 Graphite pass、每个约 1 ms，且与 backdrop 模糊链交错。
 - 渲染编码器的颜色附件若是整张单采样 vramOn 表面，改画到私有 tiled 影子；`endEncoding` 时影子标为 *pending* 而不是立即拷回；之后的采样/blit 源读影子，其它用途（blit 目标、compute、signalEvent、commit…）先拷回。
 - 旋钮 `NVMTL_TILED_RT`：0 关；1 仅应用（默认，WindowServer 不动）；2 所有进程。
 - 结果（B 站滚动，每帧 GPU）：13.6 ms → 8.8 → 8.2 → **3.2 ms**。WindowServer 实测（中位 GPU 22 µs）上加影子**不划算**，故默认不启用。
@@ -79,7 +80,7 @@
 ### 12. Steam / CEF（Apple GL-on-Metal）
 - Steam 的 CEF 走 `angle=opengl`（Apple 的 GL-on-Metal 叠在插件上），Chrome 走 ANGLE-Metal，是两条路径。
 - AppleMetalOpenGLRenderer 对每个 MSAA pass 设置全零“采样位置”；插件没有 sample-locations 后端，`nvmtl_vk_cmd_begin_pass` 返回 -1，整个 pass 被丢 → “cannot begin requested render pass”。
-- 修复：无后端时用标准采样图案（`gl-sample-positions.patch`）。测试：`catest/gldiff.m`（CGL 硬件 vs Apple 软件渲染，46 例；MSAA 边缘像素、points_lines、flipped blit 仍有预期差异）。
+- 修复：无后端时用标准采样图案（`gl-sample-positions.patch`）。1.14.2 补丁集里改用上游同类的兜底，效果相同。测试：`catest/gldiff.m`（CGL 硬件 vs Apple 软件渲染，46 例；MSAA 边缘像素、points_lines、flipped blit 仍有预期差异）。
 
 ### 16. UU 远程作控制端闪退
 - UU 的信号处理函数把 SIGABRT/SEGV/… 全部转成 `kill(self, SIGKILL)`，崩溃无 `.ips`，launchd 只说“SIGKILL sent by UURemote”。用 get-task-allow 重签名的副本放进 lldb 才抓到：
@@ -149,7 +150,7 @@
 
 ## 三、翻译器（metal2vulkan 衍生）
 
-补丁 `patches/nullmoth-1.9.0/0002-translator.patch`（LGPL-3.0-or-later）。
+当前补丁 `patches/nullmoth-1.14.2/0002-translator.patch`（LGPL-3.0-or-later；1.9.0、1.13.0 基线的旧版在各自目录）。
 
 ### 7. WebGL 着色器翻译失败（`get_num_samples`）
 - Metal 库在任何管线存在之前就被翻译，`lower_raster_sample_count` 拿不到采样数 → ANGLE 的 WebGL 着色器创建失败 → “Context lost → Restarting GPU process”（窗口整块空白一下，无 crash dump）。
@@ -166,6 +167,7 @@
 - `emitter/body/calls.rs` 在**发射 CALL 时**记录 helper 形参的常量字节偏移；但 `emit_inner` 按 IR 顺序发射，helper 在调用者之前 → 偏移回落到 buffer 根（0）→ 坐标取自 destcoord → 每行相同 → 每个 tile 纯色。**这是上游自 1.0.0 就有的 bug，1.9.0 仍在。**
 - 修复：`callers_before_pointer_helpers()` 稳定拓扑重排（仅当有指针形参的 helper 排在其调用者之前时才重排）。
 - 验证：6787 个可翻译缓存着色器新旧对比，仅 5 个变化（全是 CI Lanczos），另 25 个只是 ID 重编号。
+- 1.14.2 补丁集里由上游的 raw-cursor 发射顺序取代（上游修了同一个问题），`cikl`/`lanczos` 测试结果不变。
 
 ### 25. WebGL 多纹理单元（`sampler2D u[N]`）：Claude 桌面端终端文字不显示
 - 现象：Claude 桌面端右侧 Terminal 面板只有一个空心光标框，没有任何文字；加 `--disable-gpu` 才正常。任何用 WebGL2、且着色器里有 `uniform sampler2D tex[N]` 数组并按整数下标选用的页面都一样（xterm.js 的 WebGL 字形图集：`MAX_TEXTURE_IMAGE_UNITS`=16，`flat in int v_texpage` + if 链）。
@@ -189,8 +191,8 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
    - 修复：`libvulkan_nouveau.dylib` 2 字节补丁（open 标志 `0x1000002 → 0x1000000`，即 `O_RDWR|O_CLOEXEC` → `O_RDONLY|O_CLOEXEC`，偏移 1.0.10 为 0x12bfc8 / 0x12c0db），并把 `os_get_total_physical_memory` 重写成 `sysctlbyname("hw.memsize")`。
    - 脚本：`codec-vulkan/vulkan/vk-devnull.sh`、`vk-bindfix.sh`、`mk-bindfix.py`；1.9.0 版本的偏移用 `mk-bindfix-190.py` 重新推导。
    - 用 1.14.2 补丁集（含第 27 项的插件兜底）时，`hw.memsize` 改写不再需要，用 `mk-nomem-190.py` 去掉它；`/dev/null` 的只读补丁保留。
-- 调试备忘：`DYLD_INSERT_LIBRARIES` 进不了 Chrome 的 GPU 助手（hardened runtime）；lldb 也附不上去。
-- **Chrome 的 flags**：本机上 Graphite 与 GPU 栅格在早期构建下都渲染错误（半个四边形全黑 / 曲线路径缺失）。翻译器修复（第 9、13 项）和插件修复之后，作者重新打开了 GPU 栅格并保持 Graphite 关闭。排错时的稳定组合是 `chrome://flags` → `#skia-graphite` Disabled，必要时 `#enable-gpu-rasterization` Disabled。
+- 调试备忘：往 Chrome 里 `DYLD_INSERT_LIBRARIES`，库必须 ad-hoc 签名，未签名的会被静默忽略（本机 AMFI 已关；默认的 hardened runtime 下根本注入不了）；GPU 进程从 `/tmp` 加载插件还会被沙箱挡（见 pitfalls）。
+- **Chrome 的 flags**：本机上 Graphite 与 GPU 栅格在早期构建下都渲染错误（半个四边形全黑 / 曲线路径缺失）。翻译器修复（第 9、13 项）和插件修复之后，作者现在 GPU 栅格和 Graphite 都开着（`#enable-gpu-rasterization`、`#skia-graphite` 均为 Enabled）。排错时的稳定组合仍是 `chrome://flags` → `#skia-graphite` Disabled，必要时 `#enable-gpu-rasterization` Disabled。
 - Electron 应用也会吃到这个环境变量；有问题时 `launchctl unsetenv ANGLE_FEATURE_OVERRIDES_DISABLED`。
 
 ### 27. Firefox 没有硬件加速（GPU 沙箱连读 `/dev/null` 都不允许）
@@ -318,14 +320,14 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 
 ## 参考：内部版本演进（作者本机）
 
-插件版本链：v46 → v47（持久化 pipeline cache）→ v48（合入上游 1.9.0：采样器负 LOD、`shaderDrawParameters`、GL zero-net、翻译器的 base_vertex/base_instance；260/260 缓存着色器逐字节一致）→ tiled 渲染影子 → selffetch → gl-sample-positions；翻译器：`761a54b4`（顶点输出）→ `eb4fb6a3`（Lanczos）。
+插件版本链：v46 → v47（持久化 pipeline cache）→ v48（合入上游 1.9.0：采样器负 LOD、`shaderDrawParameters`、GL zero-net、翻译器的 base_vertex/base_instance；260/260 缓存着色器逐字节一致）→ tiled 渲染影子 → selffetch → gl-sample-positions → 合入 1.13.0（compute stage_in、Unknown 用途、采样器数组）→ 合入 1.14.2（`d8aa6e31`）→ 暂存缓冲复用（`ac789120`）→ 提前提交（`3108990a`）→ 渲染影子复用（`4eb05cf4`）→ 沙箱兜底 + Unity 锁（`dbbc77ec`）→ 单次绘制开销（`93c3be14`）；翻译器：`761a54b4`（顶点输出）→ `eb4fb6a3`（Lanczos）→ `50471f26`（1.13.0）→ `aa11ce8d`（采样器数组）→ `f62a16e5`（1.14.2）→ `2a3e7ea7`（地址表合并）。NVK：`d94ea1a3`（bindfix）→ `19bbfc23`（去掉 `hw.memsize` 改写）。
 `nvguard/` 里记录的哈希就是这些构建的 sha256（你自己的构建哈希不会相同）。
 
 ## 九、1.13.0 用户态补丁集
 
 `patches/nullmoth-1.13.0/` 是把插件和翻译器的本地修改重新整理到**上游 v1.13.0** 之上的差异（已验证可在原版 v1.13.0 上干净应用，应用后的插件和翻译器可编译，并通过 `hidpi/catest/` 里的回归程序）。和 1.9.0 版相比：
 - 上游 1.13 已吸收的内容（视口深度夹紧等）不再出现在补丁里。
-- 额外一处本地改动：1.13 只在 Blackwell 上注册 NVENC，Ada 上我们的 NVENC 补丁（修复 15）会被绕开，所以插件默认在所有 GPU 上注册，设置环境变量 `NVMTL_NVENC_BLACKWELL_ONLY` 才恢复上游行为。
+- 额外一处本地改动：1.13 只在 Blackwell 上注册 NVENC，Ada 上我们的 NVENC 补丁（修复 15）会被绕开，所以插件默认在所有 GPU 上注册，在 `nvrm610.conf` 里写 `NVMTL_NVENC_BLACKWELL_ONLY=1` 才恢复上游行为（1.14.2 版同样如此）。
 - **没有**升级内核扩展。1.9.0→1.13.0 期间 NVRM 核心源码没有变化，变化的只有 NVAccel（无头 GPU、Intel 内置屏，仅用于面板不在独显上的笔记本）、NVRMFB（光标，已移植为修复 21；另有“多列出分辨率”，未移植）、新增的 NMIntelFB 与 NMHDA。对独显直连的机器升级没有收益，所以内核扩展仍以 1.9.0 为基线；若要升级，NVRM 与 NVK 的字节补丁偏移量需针对 1.13.0 的二进制重新核对。
 
 ## 九（续）、1.14.2 用户态补丁集（当前推荐）

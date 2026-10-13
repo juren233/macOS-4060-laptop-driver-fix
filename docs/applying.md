@@ -95,6 +95,8 @@ sudo zsh codec-vulkan/nvenc/uu-nvenc-t2d.sh install|restore
 sudo zsh codec-vulkan/vulkan/vk-devnull.sh install|restore
 ```
 `vk-bindfix.sh` / `mk-bindfix*.py` 是用 Python 重新推导补丁的版本（1.0.10 与 1.9.0 偏移不同）；`mk-bindfix-190.py` 对应 1.9.0 的 `libvulkan_nouveau.dylib`。
+用 1.14.2 补丁集的插件时，再用 `mk-nomem-190.py` 去掉 `hw.memsize` 改写（修复 27，插件和 NVK 要一起换）。
+H.264 解码提速（修复 14）：`mk-detile8.py`、`mk-sleep.py` 生成补丁版，`sudo zsh codec-vulkan/nvdec/nvdec-sleep.sh` 安装（带 `restore`），`decbench.swift` 测速并逐比特比对。
 
 ## 8. 守护（可选）
 
@@ -113,6 +115,11 @@ sudo zsh codec-vulkan/vulkan/vk-devnull.sh install|restore
 | `selffetch.m` `selfrect.m` | self-bind guard（含负对照） |
 | `nsamp.m` `gldiff.m` | 采样数 / Apple GL 对比 |
 | `cikl.m` `cidown.m` `lanczos.m` `mipt.m` `fmath.m` | Core Image Lanczos 与相关数学 |
+| `upbench.m` `vidup.m` `schedlat.m` `chainstress.m` `newsurf.m` `rparktest.m` | 修复 26：视频帧上传、`waitUntilScheduled` 延迟、提交顺序压力、每帧新表面开销、渲染影子复用 |
+| `danmaku/` | 修复 26：合成弹幕页 + 4K 测试视频生成、隔离的测试 Chrome，`tools/wsframes.sh` 数 WindowServer 实际上屏帧数（不需要录屏权限） |
+| `ffsandbox.m` `unitylock.m` | 修复 27（Firefox GPU 沙箱，需自备 `ffsandbox-gpu.sb`）、28（Unity 式加锁提交） |
+| `drawbench.m` | 修复 29：每次 draw 的 CPU 开销（5 种绑定模式）+ 图像校验和 |
+| `vtreg.m` | 修复 14：H.264 硬件解码器是否注册到 VideoToolbox |
 | `hidpi/tests/*.sh` | 旋钮二分、WindowServer 重启、模式探测等脚本 |
 
 测试未发布的翻译器：在同一目录放插件副本、指向 `air-runtime` 的软链和新的 `libnvmtl_translate.dylib`，再用 `plugshim` 运行。

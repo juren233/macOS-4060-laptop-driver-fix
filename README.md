@@ -33,7 +33,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 你的情况 | 适用的修复 |
 |---|---|
 | 任何 NullMoth 支持的 NVIDIA 卡 + macOS 15（用户态，与机型无关） | 3、4、6、7、8、9、10、11、12、13、16、20、22、23、25、26（插件部分）、27、28、29 |
-| 需要特定 NullMoth 版本的二进制（字节补丁/偏移量绑定版本） | 2、5（NVK 部分）、14、15 |
+| 需要特定 NullMoth 版本的二进制（字节补丁/偏移量绑定版本） | 2、5（NVK 部分）、14、15、27（NVK 部分） |
 | 仅 Ada（RTX 40 系）：NVDEC/NVENC 的 t2d 布局 | 14、15 |
 | 取决于你的面板和主板 | 1（HiDPI：面板 ID、刷新率）、17（亮度：DSDT 里的 `_DSM`/`_DOD` 路径） |
 | 仅限同款硬件 | 18（Intel AX211）、19（ELAN0420 I²C 触控板）、24（ALC256 声卡，layout 因机型而异） |
@@ -48,16 +48,16 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 1 | 无法开 HiDPI；开了也进不去 165Hz | NVKMS 在独显上隐藏窗口缩放；head-scaler 的 IMP 在 165Hz 只接受 ≤1.4× 降采样 | NVRM 二进制 26 字节补丁（head scaler）+ 自定义 `DisplayProductID` 覆盖，得到 1792×1008 HiDPI @165Hz，零拷贝翻转 | `kexts/patch-nvrm-190.py`、`hidpi/overrides/` |
 | 2 | 开机后 Dock 等窗口停止刷新，需重启进程 | 零拷贝翻转在启动 60 秒后才热切换 | NVRM 把 `IOSleep(60000)` 改 0，翻转在 WindowServer 首次提交前就绪 | `patches/…/0003`、`patch-nvrm-190.py` |
 | 3 | 界面出现黑块、残影、窗口圆角变方 | WindowServer 往**线性**共享 IOSurface VRAM 渲染图层缓存结果出错 + 过期上传竞争 | 小于阈值的 IOSurface 用私有 tiled 图像（`NVMTL_SURF_SHARE_MINPX`）+ 纹理一致性补丁；后续修复之后作者已改回 `MINPX=0`（全部走共享显存），未再出现黑块 | `patches/…/0001`（`per-fix/stale-texture-fix`, `surface-guard-diag`） |
-| 4 | WindowServer 占 75–90% CPU、掉帧 | 每次 IOSurface 内容变化做同步 CPU 拷贝+等 fence | 异步上传 + 主机指针导入 | `per-fix/surfin-async.patch` |
+| 4 | WindowServer 占 75–90% CPU、掉帧 | 每次 IOSurface 内容变化做同步 CPU 拷贝+等 fence | 异步上传（GPU 直接读表面页面的导入默认关闭，会和 Chrome 竞争） | `per-fix/surfin-async.patch` |
 | 5 | Chrome 变成软件合成 | ANGLE 在 NVIDIA 上禁用 Metal；GPU 沙箱拒绝 `/dev/null` 写入使 NVK 连接失败 | 环境变量 `ANGLE_FEATURE_OVERRIDES_DISABLED=disableMetalOnNvidia` + `libvulkan_nouveau.dylib` 2 字节补丁（`hw.memsize` 改写在 1.14.2 补丁集下由插件兜底取代，见 27） | `codec-vulkan/vulkan/` |
-| 6 | Chrome 满屏闪烁 | `waitUntilScheduled` / scheduled 回调在 GPU 完成前就返回，IOSurface 未发布 | 等到完成再回调 | `per-fix/scheduled-wait.patch` |
+| 6 | Chrome 满屏闪烁 | `waitUntilScheduled` / scheduled 回调在 GPU 完成前就返回，IOSurface 未发布 | scheduled 回调在完成时执行（`waitUntilScheduled` 的等待后来证明不需要，作者已关闭，见 26） | `per-fix/scheduled-wait.patch` |
 | 7 | Chrome 窗口偶发整块空白一下 | ANGLE WebGL 着色器翻译失败（`air.get_num_samples` 需要 `raster_sample_count`），GPU 进程被重启 | 翻译器改为 SpecConstant + 插件下发 `VkSpecializationInfo` | `per-fix/raster-samples.patch` |
 | 8 | 视频悬浮预览纯绿、窗口对角撕裂 | 插件从不持有 IOSurface use count，Chromium 回收了仍在被 GPU 使用的 buffer | 命令缓冲持有/释放 use count | `per-fix/surface-usecount.patch` |
 | 9 | Graphite 渲染缺块 / 页面背景消失 | **翻译器**在新生成的返回结构体上丢掉了全部顶点输出（`rewrite_return`） | 回退到 `type_def_of` 查找 | `patches/…/0002` |
 | 10 | Chrome 滚动慢（B 站） | 窗口级线性 RT 的每个 pass ≈1 ms | 线性 RT 的 tiled 渲染影子（每帧 GPU 13.6 → 3.2 ms） | `per-fix/tiled-render-shadow.patch` |
 | 11 | Cmd-Tab/拖动时 WindowServer 超 165Hz 帧预算 | self-bind guard 每次采样前复制整个 28 MB 帧缓冲 | 对 `fixed_frag_*` 走“结束 pass→屏障→重启→自采样”，不拷贝（>6 ms 帧 536 → 6） | `per-fix/selfbind-fetch.patch` |
-| 12 | Steam / CEF 界面闪烁、错位 | Apple GL-on-Metal 的 MSAA pass 设置了全零采样位置，插件无后端直接拒绝整个 pass | 无采样位置后端时回退到标准采样图案 | `per-fix/gl-sample-positions.patch` |
-| 13 | 截图缩略图 / 预览里大图变成一块块纯色 | **翻译器**：CI Lanczos 的 stitched AIR 中，调用方晚于接收指针参数的 helper 被发射，丢了常量偏移 | “调用者优先”的稳定拓扑重排 | `per-fix/translator-callers-first.patch` |
+| 12 | Steam / CEF 界面闪烁、错位 | Apple GL-on-Metal 的 MSAA pass 设置了全零采样位置，插件无后端直接拒绝整个 pass | 无采样位置后端时回退到标准采样图案（1.14.2 版改用上游同类兜底） | `per-fix/gl-sample-positions.patch` |
+| 13 | 截图缩略图 / 预览里大图变成一块块纯色 | **翻译器**：CI Lanczos 的 stitched AIR 中，调用方晚于接收指针参数的 helper 被发射，丢了常量偏移 | “调用者优先”的稳定拓扑重排（1.14.2 版由上游的同类修复取代） | `per-fix/translator-callers-first.patch` |
 | 14 | 播放视频有 16px 竖条纹（App Store 等）；H.264 硬解慢、占 CPU | NVDEC H.264 以 Blackwell 的 detile mode 1 解，Ada 实为 t2d GOB（mode 0）；1.13 起插件找 `libnvdec_h264_t2d.dylib` 却从未安装；detile 每次拷 1 字节、等待时自旋 | 1 字节补丁；以 t2d 名安装；8 字节 detile（4K 26.8 → 12.6 ms/帧）+ 休眠等待（CPU 4K 8.0 → 3.7 ms/帧） | `codec-vulkan/nvdec/` |
 | 15 | UU 远程被控端卡在“传输画面中”/ 花屏 / 慢 | NVENC：NotSync 标志、bw8/bw16 与 t2d 布局不符、清零 29 MB 显存走 BAR、无码率控制 | H.264 二进制补丁（t2d 循环、NotSync、AVX 清零、逐帧 QP 码控） | `codec-vulkan/nvenc/` |
 | 16 | UU 作为控制端首帧闪退 | viewport 深度范围越界传给 NVK 触发 `assert(0<=zmin<=1)` | 夹紧 znear/zfar | `per-fix/viewport-depth-clamp.patch` |

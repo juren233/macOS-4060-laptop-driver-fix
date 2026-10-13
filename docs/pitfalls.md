@@ -22,7 +22,7 @@
 - 沙箱里的 WindowServer 只能写 `/private/tmp`、`/private/var/tmp`、`TMPDIR`，诊断日志放这里。
 - `dtrace -p WindowServer` 被 SIP 挡，用 `spindump WindowServer 10`；内核符号用 `nm /System/Library/Kernels/kernel`（基址 `0xffffff8000200000`）。
 - UU 的信号处理会把崩溃全部变成 SIGKILL；要看真正的崩溃需 get-task-allow 重签名后进 lldb。
-- 在 Claude Code 的 `!` 命令里没法输入 sudo 密码；需要 root 的脚本请在 Terminal.app 里跑。
+- 在 Claude Code 里跑需要 sudo 的脚本：命令行版的 `!` 命令没法输入密码，请在 Terminal.app 里跑；桌面版可以在它的终端面板里输入密码。
 
 - **看流畅度要量 WindowServer 实际上屏的帧数，不是网页里的 `requestAnimationFrame`**。智能防挡弹幕时 Chrome 的 rAF 一直是 165 fps，实际上屏只有约 90。
   不需要录屏权限的办法：WindowServer 每次更新屏幕都会打一条 CoreDisplay 调试日志（“using last created GPU Gamma Table”），数它的时间戳即可（`hidpi/catest/danmaku/tools/wsframes.sh`）。
