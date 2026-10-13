@@ -40,9 +40,11 @@
 1. `newTiledTextureWithDescriptor` 在 pitch/offset 非 32B 对齐时退化为一次性拷贝，CA 之后写 buffer 纹理却不更新 → 过期内容；
    `newBufferWithBytesNoCopy` 在宿主指针导入被拒时同理（`stale-texture-fix.patch`）。**单独修这两处并不能治好 Finder 侧栏。**
 2. 真正根因：WindowServer 把小图层缓存渲染进**线性共享 IOSurface VRAM**，结果出错（具体哪个操作未查明）；另有“纹理创建与 GPU 写入的发布顺序”竞争。
-3. 修复：旋钮 `NVMTL_SURF_SHARE_MINPX`（默认 0，推荐 `3686400`）——像素数低于阈值的 IOSurface 用**私有 tiled 图像**；同一进程里同一私有 IOSurface 的所有纹理共享同一根图像；
+3. 修复：旋钮 `NVMTL_SURF_SHARE_MINPX`（默认 0）——像素数低于阈值的 IOSurface 用**私有 tiled 图像**（当时用 `3686400`）；同一进程里同一私有 IOSurface 的所有纹理共享同一根图像；
    `surfaceOut` 在写 tag 之后才标记已发布。帧缓冲必须保持共享（扫描输出需要）。
 4. 后续：窗口尺寸 ≥ 阈值的共享表面若被自己的 pass 采样（defocus），做快照（`surface-guard-diag.patch` / `private-guard.patch`）。
+- **现状**：有了后续修复（本节第 4 点的自采样快照等）之后，作者本机自 2026-10-13 起改回 `MINPX=0`（所有窗口大小的 IOSurface 都走共享显存），没有再出现黑块，而且智能防挡弹幕下 WindowServer CPU 80% → 55%（第 26 项）。`nvguard/` 现在保持的就是 `0`。如果你的机器出现黑块，再把它设回 `3686400`。
+  注意 conf 里同一个键只有**第一行**生效，追加一行不会覆盖前面的值（`nvguard/` 会删掉旧行再写）。
 - 验证：`hidpi/catest/surftex.m`（6 种时序）、`hostcopy.m`、`tiledtex.m`、`lintarget.m`；窗口截图（`app_screenshot` 类工具）能复现该问题，可作判据。
 - ⚠ 教训：只看窗口截图正确不代表屏幕正确——曾出现“窗口捕获正常但物理屏幕全黑”。要让人看实际屏幕。
 

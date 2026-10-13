@@ -11,7 +11,7 @@
 CONF=/Library/GPUBundles/nvmtl/nvrm610.conf
 B1="# --- claude bisect ---"; B2="# --- end claude bisect ---"
 [ "$(id -u)" = 0 ] || [ "$1" = show ] || { echo "需要 sudo"; exit 1; }
-strip() { sed -i '' "/$B1/,/$B2/d" $CONF; sed -i '' 's/^NVMTL_SURF_SHARE_MINPX=.*/NVMTL_SURF_SHARE_MINPX=3686400/' $CONF; }
+strip() { sed -i '' "/$B1/,/$B2/d" $CONF; sed -i '' 's/^NVMTL_SURF_SHARE_MINPX=.*/NVMTL_SURF_SHARE_MINPX=0/' $CONF; }
 case "$1" in
   show) cat $CONF ;;
   reset) cp $CONF $CONF.bak-bisect; strip; echo "已还原"; cat $CONF ;;

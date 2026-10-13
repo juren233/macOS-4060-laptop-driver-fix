@@ -43,7 +43,7 @@ Suggested order: user-space first (plugin, translator) and live with it; then by
 |---|---------|-----------|-----|
 | 1 | No HiDPI / can't reach 165 Hz | NVKMS hides window scaling on dGPUs; IMP accepts ≤1.4× downscale at 165 Hz | 26-byte NVRM head-scaler patch + display override → 1792×1008 HiDPI @165 Hz |
 | 2 | Dock stops presenting after login | Zero-copy flip hot-switched 60 s after boot | NVRM `IOSleep(60000)→0` |
-| 3 | Black blocks / ghost text / square window corners | WindowServer layer-cache renders into *linear* shared IOSurface VRAM come out wrong; stale-upload races | `NVMTL_SURF_SHARE_MINPX` private tiled images + consistency patches |
+| 3 | Black blocks / ghost text / square window corners | WindowServer layer-cache renders into *linear* shared IOSurface VRAM come out wrong; stale-upload races | `NVMTL_SURF_SHARE_MINPX` private tiled images + consistency patches; after the later fixes the author is back on `MINPX=0` (all shared VRAM) with no black blocks |
 | 4 | WindowServer 75–90 % CPU | Sync CPU copy + fence wait per IOSurface change | Async surface-in with host-pointer import |
 | 5 | Chrome falls back to software compositing | ANGLE `disableMetalOnNvidia`; GPU sandbox denies `/dev/null` write & `hw.pagesize` | env override + 2-byte NVK patch + `hw.memsize` rewrite |
 | 6 | Chrome/Electron flicker | `waitUntilScheduled` / scheduled handlers fire before GPU completion | Wait/run at completion |

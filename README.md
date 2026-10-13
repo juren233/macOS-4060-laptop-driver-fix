@@ -47,7 +47,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 |---|------|---------------|------|------|
 | 1 | 无法开 HiDPI；开了也进不去 165Hz | NVKMS 在独显上隐藏窗口缩放；head-scaler 的 IMP 在 165Hz 只接受 ≤1.4× 降采样 | NVRM 二进制 26 字节补丁（head scaler）+ 自定义 `DisplayProductID` 覆盖，得到 1792×1008 HiDPI @165Hz，零拷贝翻转 | `kexts/patch-nvrm-190.py`、`hidpi/overrides/` |
 | 2 | 开机后 Dock 等窗口停止刷新，需重启进程 | 零拷贝翻转在启动 60 秒后才热切换 | NVRM 把 `IOSleep(60000)` 改 0，翻转在 WindowServer 首次提交前就绪 | `patches/…/0003`、`patch-nvrm-190.py` |
-| 3 | 界面出现黑块、残影、窗口圆角变方 | WindowServer 往**线性**共享 IOSurface VRAM 渲染图层缓存结果出错 + 过期上传竞争 | 小于阈值的 IOSurface 用私有 tiled 图像（`NVMTL_SURF_SHARE_MINPX`）；纹理一致性补丁 | `patches/…/0001`（`per-fix/stale-texture-fix`, `surface-guard-diag`） |
+| 3 | 界面出现黑块、残影、窗口圆角变方 | WindowServer 往**线性**共享 IOSurface VRAM 渲染图层缓存结果出错 + 过期上传竞争 | 小于阈值的 IOSurface 用私有 tiled 图像（`NVMTL_SURF_SHARE_MINPX`）+ 纹理一致性补丁；后续修复之后作者已改回 `MINPX=0`（全部走共享显存），未再出现黑块 | `patches/…/0001`（`per-fix/stale-texture-fix`, `surface-guard-diag`） |
 | 4 | WindowServer 占 75–90% CPU、掉帧 | 每次 IOSurface 内容变化做同步 CPU 拷贝+等 fence | 异步上传 + 主机指针导入 | `per-fix/surfin-async.patch` |
 | 5 | Chrome 变成软件合成 | ANGLE 在 NVIDIA 上禁用 Metal；GPU 沙箱拒绝 `/dev/null` 写入使 NVK 连接失败 | 环境变量 `ANGLE_FEATURE_OVERRIDES_DISABLED=disableMetalOnNvidia` + `libvulkan_nouveau.dylib` 2 字节补丁（`hw.memsize` 改写在 1.14.2 补丁集下由插件兜底取代，见 27） | `codec-vulkan/vulkan/` |
 | 6 | Chrome 满屏闪烁 | `waitUntilScheduled` / scheduled 回调在 GPU 完成前就返回，IOSurface 未发布 | 等到完成再回调 | `per-fix/scheduled-wait.patch` |
