@@ -6,7 +6,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
-static id<MTLDevice> shim_create(void) {
+// MTLCreateSystemDefaultDevice returns +1 and ARC callers release it: return retained too, or every call inside the plugin (static
+// samplers create their states through it) drops one reference and the device is freed under VideoToolbox's two-pass scaler.
+__attribute__((ns_returns_retained)) static id<MTLDevice> shim_create(void) {
     static id<MTLDevice> dev; static dispatch_once_t once;
     dispatch_once(&once, ^{
         const char *p = getenv("NVMTL_TEST_PLUGIN");

@@ -1,0 +1,62 @@
+diff --git a/translator/translator/src/passes/mod.rs b/translator/translator/src/passes/mod.rs
+index 44ad194..1a7f7d9 100644
+--- a/translator/translator/src/passes/mod.rs
++++ b/translator/translator/src/passes/mod.rs
+@@ -892,6 +892,27 @@ fn ptr_pointee(defs: &HashMap<Word, Instruction>, ptr: Word) -> Option<Word> {
+     None
+ }
+ 
++/// Length of the array a sampler entry parameter points to (`array<sampler, N>` arrives as a
++/// pointer to `[N x ptr]`); `None` for a plain sampler.
++fn sampler_param_array_length(defs: &HashMap<Word, Instruction>, param_ty: Word) -> Option<u32> {
++    let array = defs.get(&ptr_pointee(defs, param_ty)?)?;
++    if array.class.opcode != Op::TypeArray {
++        return None;
++    }
++    let Some(Operand::IdRef(length)) = array.operands.get(1) else {
++        return None;
++    };
++    let length = defs.get(length)?;
++    if length.class.opcode != Op::Constant {
++        return None;
++    }
++    match length.operands.first()? {
++        Operand::LiteralBit32(n) => Some(*n),
++        Operand::LiteralBit64(n) => u32::try_from(*n).ok(),
++        _ => None,
++    }
++}
++
+ fn ptr_storage(defs: &HashMap<Word, Instruction>, ptr: Word) -> Option<StorageClass> {
+     let inst = defs.get(&ptr)?;
+     if inst.class.opcode == Op::TypePointer {
+diff --git a/translator/translator/src/passes/stage_input/mod.rs b/translator/translator/src/passes/stage_input/mod.rs
+index 8c43be0..46a0e40 100644
+--- a/translator/translator/src/passes/stage_input/mod.rs
++++ b/translator/translator/src/passes/stage_input/mod.rs
+@@ -861,18 +861,24 @@ pub(super) fn build_stage_input(
+                 },
+             ));
+         } else if role_is("sampler")
+-            && match stage {
++            && (match stage {
+                 Stage::Fragment => frag.and_then(|m| m.declared_descriptor_count(idx)),
+                 Stage::Vertex => vert.and_then(|m| m.declared_descriptor_count(idx)),
+                 Stage::Kernel => kern.and_then(|m| m.declared_descriptor_count(idx)),
+             }
+             .is_some_and(|count| count > 1)
++                || sampler_param_array_length(&defs, *pty) == Some(1))
+         {
++            // DO-NOT-REVERT: `array<sampler, 1>` (ANGLE's `uniform sampler2D s[1]`, e.g. three.js
++            // shadow maps) is a pointer to a one-element array, not a sampler value. Bound as a
++            // plain sampler, ANGLE's `TextureEnv` store of the parameter becomes null and the
++            // sample call in a helper (getShadow) has no sampler left to name.
+             let count = match stage {
+                 Stage::Fragment => frag.and_then(|m| m.declared_descriptor_count(idx)),
+                 Stage::Vertex => vert.and_then(|m| m.declared_descriptor_count(idx)),
+                 Stage::Kernel => kern.and_then(|m| m.declared_descriptor_count(idx)),
+             }
++            .or_else(|| sampler_param_array_length(&defs, *pty))
+             .ok_or("sampler array has no declared descriptor count")?;
+             let elem_ty = ctx.ty_sampler();
+             let array_ty = ctx.ty_array(elem_ty, count);

@@ -1,0 +1,242 @@
+diff --git a/plugin/NVMTLEventSync.m b/plugin/NVMTLEventSync.m
+index 6f39cd2..f03cffa 100644
+--- a/plugin/NVMTLEventSync.m
++++ b/plugin/NVMTLEventSync.m
+@@ -49,6 +49,25 @@ - (void)dealloc {
+ }
+ @end
+ 
++// Shared-VRAM IOSurfaces this part uses that another process still has unpublished GPU writes to (nvmtl_xwr_wait). Private
++// images were waited for at surface-in, when their pages were read.
++static BOOL nvmtl_xwr_part_pending(NVMTLSubmissionPart *part) {
++    if (!nvmtl_xsync_on()) return NO;
++    for (id o in part->resources) {
++        if (![o isKindOfClass:[NVMTLTexture class]]) continue;
++        NVMTLTexture *t = o, *r = t->_parent ? t->_parent : t;
++        if (r->_surf && r->_vramOn && nvmtl_xwr_pending(r->_surf, r->_plane, NULL, NULL)) return YES;
++    }
++    return NO;
++}
++static void nvmtl_xwr_part_wait(NVMTLSubmissionPart *part) {
++    if (!nvmtl_xsync_on()) return;
++    for (id o in part->resources) {
++        if (![o isKindOfClass:[NVMTLTexture class]]) continue;
++        NVMTLTexture *t = o, *r = t->_parent ? t->_parent : t;
++        if (r->_surf && r->_vramOn) nvmtl_xwr_wait(r->_surf, r->_plane, "submit");
++    }
++}
+ static NSMutableArray<NVMTLCommandBuffer *> *nvmtl_pending_buffers;
+ static BOOL nvmtl_pumping;
+ static void nvmtl_pump_buffers(void);
+@@ -292,6 +311,7 @@ - (BOOL)nvmtlSubmitAhead {
+                     if ([resource isKindOfClass:[NVMTLBuffer class]] && ((NVMTLBuffer *)resource)->_hostPtr) return NO;
+             }
+         }
++        if (nvmtl_xwr_part_pending(part)) return NO;   // the execution worker waits for the other process, then submits
+         nvmtl_inflight *f = nvmtl_vk_inflight_new();
+         if (!f) return NO;
+         [self nvmtlMarkScheduled];
+@@ -373,6 +393,7 @@ - (BOOL)nvmtlAdvancePartBody {
+         else {
+             for (id resource in part->resources)
+                 if ([resource isKindOfClass:[NVMTLBuffer class]]) nvmtl_buffer_sync_in(resource);
++            nvmtl_xwr_part_wait(part);
+             result = nvmtl_vk_submit_wait(&part->commands);
+         }
+         if (result == -2) {
+@@ -387,6 +408,7 @@ - (BOOL)nvmtlAdvancePartBody {
+                 if ([resource isKindOfClass:[NVMTLBuffer class]]) nvmtl_buffer_sync_out(resource);
+         }
+         if (!published) {
++            if (result) for (NVMTLTexture *texture in part->surfaces) nvmtl_surf_dirty_drop(texture);
+             [self nvmtlFinishExecution:[NSError errorWithDomain:MTLCommandBufferErrorDomain code:MTLCommandBufferErrorInternal
+                 userInfo:@{NSLocalizedDescriptionKey:result ? @"GPU event segment submission failed" : @"Could not publish event segment writes"}]];
+             return YES;
+@@ -414,7 +436,23 @@ - (BOOL)nvmtlAdvancePartBody {
+     if (last) [self nvmtlFinishExecution:nil];
+     return YES;
+ }
++// Committed GPU work outlives its process on Apple GPUs; here the execution worker submits and publishes it, and a process that
++// exits right after a commit (gfx4's producer after its last frame) left the surface unpublished - the consumer timed out and
++// read the old frame. At exit, give the worker up to 1 s to finish what was committed.
++static void nvmtl_exit_drain(void) {
++    const uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    for (;;) {
++        NSUInteger n;
++        @synchronized ([NVMTLCommandBuffer class]) { n = nvmtl_pending_buffers.count; }
++        if (!n) break;
++        if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0 > 1000000000ull) {
++            nvdiag_emit("exit: %lu committed command buffers still unfinished after 1 s - exiting anyway", (unsigned long)n); break; }
++        usleep(500);
++    }
++}
+ - (void)nvmtlSubmitWithEvents {
++    static dispatch_once_t exitOnce;
++    if (nvmtl_xsync_on()) dispatch_once(&exitOnce, ^{ atexit(nvmtl_exit_drain); });
+     @synchronized ([NVMTLCommandBuffer class]) {
+         if (_committed) return;
+         [self nvmtlReserveQueue];
+diff --git a/plugin/NVMTLObjects.m b/plugin/NVMTLObjects.m
+index 3893c7d..fb50a6f 100644
+--- a/plugin/NVMTLObjects.m
++++ b/plugin/NVMTLObjects.m
+@@ -931,7 +931,14 @@ static void nvmtl_surf_dirty(NVMTLCommandBuffer *cb, NVMTLTexture *t) {
+     if (!cb->_surfDirty) cb->_surfDirty = [NSMutableSet new];
+     if ([cb->_surfDirty containsObject:r]) return;   // one mark per surface per submission part: the publish is counted the same way
+     [cb->_surfDirty addObject:r];
+-    nvsd_mark(NVSD_KEY(r), 0);
++    nvsd_mark(NVSD_KEY(r), 0); nvmtl_xwr_note(r->_surf, r->_plane, NVSD_KEY(r), r->_vramOn);
++}
++// A marked write that will never be published (its command buffer was dropped uncommitted, or its submission failed): count it
++// as published, so neither this process's surface-in guard nor another process's nvmtl_xwr_wait waits for it.
++static void nvmtl_surf_dirty_drop(NVMTLTexture *t) {
++    NVMTLTexture *r = t && t->_parent ? t->_parent : t;
++    if (!r || !r->_surf) return;
++    nvsd_mark(NVSD_KEY(r), 1); nvmtl_xwr_note(r->_surf, r->_plane, NVSD_KEY(r), r->_vramOn);
+ }
+ // A texture a kernel writes through a storage binding although NVK cannot make it a storage image - an IOSurface in a
+ // pitch-linear layout (ImageIO's RGBA16Unorm HDR / gain-map output), or a format NVK refuses linear storage for. The
+@@ -1272,9 +1279,22 @@ - (void)nvmtlSurfaceIn {
+         return;
+     }
+     if (!r->_surf) return;
++    { // Another process's unpublished GPU writes (nvmtl_xwr_note). Both over the shared VRAM: the VRAM will hold them, the CPU
++      // pages never do - no upload; the submission waits for them (nvmtl_xwr_part_wait), so this thread is not held. Otherwise
++      // they arrive through the pages: wait here, before the upload decision reads them.
++      uint32_t wflags = 0;
++      if (nvmtl_xwr_pending(r->_surf, r->_plane, NULL, &wflags)) {
++          if (r->_vramOn && (wflags & NVMTL_XWR_VRAM)) {
++              r->_surfSeed = IOSurfaceGetSeed(r->_surf); r->_surfSynced = YES;
++              NVDIAG(50, "surfin XSYNC: surf %u %ux%u shared VRAM has another process's GPU writes in flight - CPU upload skipped",
++                     (unsigned)IOSurfaceGetID(r->_surf), r->_i.w, r->_i.h);
++              return; }
++          nvmtl_xwr_wait(r->_surf, r->_plane, "surface-in");
++      } }
+     const uint32_t vgen = r->_vramOn ? 0 : nvmtl_vram_gen(r->_surf, r->_plane);
+     if (r->_surfSynced && IOSurfaceGetSeed(r->_surf) == r->_surfSeed && (r->_vramOn || vgen == r->_surfGen)) { NVVID(r, "surface-in: already synced (seed %u)", r->_surfSeed); return; }
+     if (![r nvmtlSurfaceCopyable]) { NVVID(r, "surface-in: not copyable"); return; }
++    if (nvmtl_xsync_trace()) fprintf(stderr, "xsync %d SURFIN surf %u vram %d synced %d seed %u/%u\n", getpid(), (unsigned)IOSurfaceGetID(r->_surf), r->_vramOn, r->_surfSynced, IOSurfaceGetSeed(r->_surf), r->_surfSeed);
+     { uint32_t now = IOSurfaceGetSeed(r->_surf);
+       if (nvsd_guard_on() && nvsd_pending(NVSD_KEY(r))) {
+           // Private images too: this process's own surface-out raises the seed after every frame, so an upload keyed on
+@@ -1345,7 +1365,7 @@ - (BOOL)nvmtlSurfaceOut {
+     // texture made in between upload the old CPU pages over them.
+     const BOOL ok = [self nvmtlSurfaceOutPublish];
+     NVMTLTexture *r = _parent ? _parent : self;
+-    if (r->_surf) nvsd_mark(NVSD_KEY(r), 1);
++    if (r->_surf) { nvsd_mark(NVSD_KEY(r), 1); nvmtl_xwr_note(r->_surf, r->_plane, NVSD_KEY(r), r->_vramOn); }
+     return ok;
+ }
+ - (BOOL)nvmtlSurfaceOutPublish {
+@@ -5438,6 +5458,11 @@ - (void)enqueue {
+ }
+ - (void)dealloc {
+     nvmtl_res2_cb_done(self);
++    if (!_committed) {
++        for (NVMTLTexture *t in _surfDirty) nvmtl_surf_dirty_drop(t);
++        for (NVMTLSubmissionPart *part in _parts)
++            if ([part isKindOfClass:[NVMTLSubmissionPart class]]) for (NVMTLTexture *t in part->surfaces) nvmtl_surf_dirty_drop(t);
++    }
+     if (!_committed && _c.cb) nvmtl_vk_cmd_abandon(&_c);
+     [self nvmtlReleaseCapacity];
+     @synchronized ([NVMTLCommandBuffer class]) {
+diff --git a/plugin/nvmtl_diag.h b/plugin/nvmtl_diag.h
+index 6b33540..37af8e6 100644
+--- a/plugin/nvmtl_diag.h
++++ b/plugin/nvmtl_diag.h
+@@ -46,6 +46,95 @@ static int nvsd_pending(uint32_t id) {
+     os_unfair_lock_unlock(&g_nvsd_l);
+     return p;
+ }
++// Cross-process GPU-write tracking. A producer (Chrome's GPU process, gfx4's producer) commits writes to an IOSurface and,
++// with NVMTL_SCHEDULED_WAIT=0, hands the surface over as soon as they are submitted. On Apple GPUs the consumer's later work is
++// ordered after them; here every process has its own GPU channel, and a private image's writes reach the surface's pages
++// only at the surface-out after completion. The consumer read the previous frame (catest/gfx4: 1-53 of 60 frames wrong).
++// The g_nvsd counters (encoded / published writes) are mirrored into the surface as value "NVMTLWr:p<plane>" (visible to
++// every process as soon as IOSurfaceSetValue returns), and a consumer waits for another process's unpublished writes
++// before it uses the surface. How depends on where the writer's texture keeps its pixels (flag NVMTL_XWR_VRAM): a writer
++// drawing into the shared VRAM leaves its result there, so a reader over that VRAM skips the page upload and waits before
++// submission (the GPU reads the VRAM); a writer with a private image publishes through the surface's pages, so every reader
++// waits at surface-in, where the upload decision reads them (catest/gfx4: producer private, consumer over shared VRAM).
++// NVMTL_XSURF_SYNC=0: off.
++#define NVMTL_XWR_MAGIC 0x3257564eu   /* "NVW2" */
++#define NVMTL_XWR_VRAM 1u
++typedef struct { uint32_t magic, pid, dn, on, flags, pad; uint64_t dirty; } nvmtl_xwr;
++static os_unfair_lock g_xwr_l = OS_UNFAIR_LOCK_INIT;
++static _Atomic unsigned long long g_xwr_waits, g_xwr_wait_ns, g_xwr_timeouts;
++static int nvmtl_xsync_trace(void) { static int on = -1; if (on < 0) { const char *e = getenv("NVMTL_XSYNC_TRACE"); on = e && *e == '1'; } return on; }
++static int nvmtl_xsync_on(void) {
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("NVMTL_XSURF_SYNC"); on = !(e && e[0] == '0');
++        nvdiag_emit("cross-process IOSurface sync %s (NVMTL_XSURF_SYNC=%s): a surface another process has unpublished GPU writes to is %s",
++                    on ? "ON" : "off", e ? e : "unset", on ? "used only after they are published" : "used at once"); }
++    return on;
++}
++static CFStringRef nvmtl_xwr_key(NSUInteger plane) {
++    static CFStringRef keys[4]; static dispatch_once_t once;
++    dispatch_once(&once, ^{ for (unsigned long i = 0; i < 4; i++) keys[i] = CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLWr:p%lu"), i); });
++    if (plane < 4) return CFRetain(keys[plane]);
++    return CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLWr:p%lu"), (unsigned long)plane);
++}
++// After nvsd_mark(id, ...): store this process's current counters for the plane in the surface. The snapshot is taken under
++// g_xwr_l, so the value written last always holds the newest counters.
++static void nvmtl_xwr_note(IOSurfaceRef surf, NSUInteger plane, uint32_t id, BOOL vram) {
++    if (!surf || !id || !nvmtl_xsync_on()) return;
++    os_unfair_lock_lock(&g_xwr_l);
++    os_unfair_lock_lock(&g_nvsd_l);
++    const int i = nvsd_slot(id);
++    const nvmtl_xwr w = { NVMTL_XWR_MAGIC, (uint32_t)getpid(), g_nvsd[i].dn, g_nvsd[i].on, vram ? NVMTL_XWR_VRAM : 0u, 0, g_nvsd[i].dirty };
++    const int valid = g_nvsd[i].id == id;
++    os_unfair_lock_unlock(&g_nvsd_l);
++    if (valid) {
++        CFDataRef d = CFDataCreate(NULL, (const UInt8 *)&w, sizeof w); CFStringRef k = nvmtl_xwr_key(plane);
++        IOSurfaceSetValue(surf, k, d); CFRelease(k); CFRelease(d);
++    }
++    if (nvmtl_xsync_trace()) fprintf(stderr, "xsync %d NOTE surf %u dn %u on %u vram %d%s\n", getpid(), (unsigned)IOSurfaceGetID(surf), w.dn, w.on, vram, valid ? "" : " (slot lost)");
++    os_unfair_lock_unlock(&g_xwr_l);
++}
++// Another process's encoded-but-unpublished writes to the plane: the count to wait for (0 = none). Entries older than 500 ms
++// are ignored like nvsd_pending's (a command buffer that was dropped or failed publishes nothing).
++static uint32_t nvmtl_xwr_pending(IOSurfaceRef surf, NSUInteger plane, uint32_t *pid, uint32_t *flags) {
++    if (!surf || !nvmtl_xsync_on()) return 0;
++    CFStringRef k = nvmtl_xwr_key(plane); CFTypeRef v = IOSurfaceCopyValue(surf, k); CFRelease(k);
++    nvmtl_xwr w = { 0 };
++    const int ok = v && CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) == (CFIndex)sizeof w;
++    if (ok) memcpy(&w, CFDataGetBytePtr((CFDataRef)v), sizeof w);
++    if (v) CFRelease(v);
++    if (!ok || w.magic != NVMTL_XWR_MAGIC || w.pid == (uint32_t)getpid() || w.dn <= w.on
++        || clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - w.dirty > 500000000ull) return 0;
++    if (pid) *pid = w.pid;
++    if (flags) *flags = w.flags;
++    return w.dn;
++}
++// Wait until the writes pending now are published (not later ones: a producer rewriting the surface must not keep us waiting),
++// the writer changes, or 200 ms pass (a cross-process event the writer waits on could otherwise deadlock us).
++static void nvmtl_xwr_wait(IOSurfaceRef surf, NSUInteger plane, const char *who) {
++    uint32_t wpid = 0; const uint32_t target = nvmtl_xwr_pending(surf, plane, &wpid, NULL);
++    if (nvmtl_xsync_trace()) fprintf(stderr, "xsync %d CHECK %s surf %u target %u\n", getpid(), who, (unsigned)IOSurfaceGetID(surf), target);
++    if (!target) return;
++    const uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    CFStringRef k = nvmtl_xwr_key(plane); int timedout = 0;
++    for (unsigned polls = 0;; polls++) {
++        usleep(polls < 50 ? 20 : 100);
++        CFTypeRef v = IOSurfaceCopyValue(surf, k); nvmtl_xwr w = { 0 };
++        const int ok = v && CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) == (CFIndex)sizeof w;
++        if (ok) memcpy(&w, CFDataGetBytePtr((CFDataRef)v), sizeof w);
++        if (v) CFRelease(v);
++        if (!ok || w.magic != NVMTL_XWR_MAGIC || w.pid != wpid || w.on >= target || w.dn < target) break;
++        if (kill((pid_t)wpid, 0) && errno == ESRCH) break;   // the writer is gone; nothing will publish (EPERM = alive, sandboxed)
++        if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0 > 200000000ull) { timedout = 1; break; }
++    }
++    CFRelease(k);
++    const uint64_t dt = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0;
++    const unsigned long long n = atomic_fetch_add(&g_xwr_waits, 1) + 1; atomic_fetch_add(&g_xwr_wait_ns, dt);
++    if (timedout) atomic_fetch_add(&g_xwr_timeouts, 1);
++    if (timedout || !(n & (n - 1)) || !(n % 5000))
++        nvdiag_emit("cross-process sync (%s): surf %u plane %lu waited %.2f ms for pid %u's GPU writes%s - %llu waits, %.1f ms total, %llu timeouts",
++                    who, (unsigned)IOSurfaceGetID(surf), (unsigned long)plane, dt / 1e6, wpid, timedout ? " - TIMED OUT, used anyway" : "",
++                    n, atomic_load(&g_xwr_wait_ns) / 1e6, (unsigned long long)atomic_load(&g_xwr_timeouts));
++}
+ static int nvsd_guard_on(void) {
+     static int on = -1;
+     if (on < 0) { const char *e = getenv("NVMTL_SURFIN_GUARD"); on = !(e && e[0] == '0');
