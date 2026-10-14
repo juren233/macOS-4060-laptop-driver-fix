@@ -12,7 +12,7 @@
 - 重装 NullMoth 驱动会重写 `nvrm610.conf` 和 dylib，上面的二进制补丁、`NVMTL_SURF_SHARE_MINPX`、`NVMTL_NO_NVENC_HEVC` 都会丢，这就是 `nvguard/` 存在的原因。
 - **不要让系统睡眠**（合盖、苹果菜单“睡眠”）：NullMoth 的 NVRM（直到 1.15.0）没有 GPU 的挂起/恢复，唤醒后 GPU 读出 `0xbadf5620`、“GSP core unresponsive”、Xid 119，屏幕不亮，只能强制关机。
   作者设了 `sudo pmset -a SleepDisabled 1`（合盖也不睡）。显示器休眠没问题。
-- **macOS 26 上 ESP 的盘号会变**（这次开机 `disk1s4`，下次 `disk0s4`）。写死盘号的脚本会去查错盘或停下；用分区 UUID 找（本仓库的 `tahoe/`、`efiguard/`、1.15.0 内核扩展脚本都这么做）。
+- **macOS 26 上 ESP 的盘号会变**（这次开机 `disk1s4`，下次 `disk0s4`）。写死盘号的脚本会去查错盘或停下；用分区 UUID 找（本仓库所有改 ESP 的脚本都这么做）。
 - **救 macOS 26 别用升级前的 EFI 备份**：iMacPro1,1 上没有 `-no_compat_check` 的配置 26 开不了机。用 `tahoe/` 的救援配置（`RESCUE.md`）。
 
 ## 调试习惯

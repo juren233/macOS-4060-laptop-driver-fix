@@ -5,13 +5,12 @@
 - OpenCore 能正常引导 macOS 15.x（或按第 9 节升级到 26）；已按 NullMoth 官方步骤装好其驱动（本仓库**不分发**驱动）。
 - Xcode 命令行工具（编译插件）、Rust 工具链（编译翻译器）、`python3`、`git`。
 - 一个**能进的备用启动项**（OpenCore 的安全模式 / 第二块 EFI），和一份完整的 EFI 备份。
-- 所有改 ESP 的脚本需要两个环境变量（缺失即退出，防止写错盘）：
+- 所有改 ESP 的脚本需要环境变量 `ESP_UUID`（缺失即退出，防止写错盘），每次运行时按这个分区 UUID 自己找盘：
   ```bash
-  export ESP_DEV=disk1s4     # diskutil list
-  export ESP_UUID=$(diskutil info $ESP_DEV | awk -F': *' '/Partition UUID/{print $2}')
+  export ESP_UUID=$(diskutil info disk1s4 | awk -F': *' '/Partition UUID/{print $2}')   # disk1s4 换成你现在的 ESP（diskutil list）
   ```
   `wifibt/install-airportitlwm.sh`、`oc-bootarg.sh`、`backlight/enable-ec.sh`、`install-builtin-bl.sh`、`kexts/install-kexts-115.sh` 等用 `mtools` 直接写 ESP，需要 `brew install mtools`。
-  **盘号每次开机可能不同**（macOS 26 上见过 `disk1s4` / `disk0s4`）：`tahoe/`、`efiguard/`、1.15.0 内核扩展脚本只认 `ESP_UUID`、自己按 UUID 找盘（`sudo -E` 传进去）；其余脚本运行前请重新确认 `ESP_DEV`。
+  不用盘号是因为**盘号每次开机可能不同**（macOS 26 上见过 `disk1s4` / `disk0s4`）。以 root 运行时用 `sudo -E` 把变量带进去。
 
 ## 1. 取得上游源码并打补丁
 

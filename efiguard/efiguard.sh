@@ -3,7 +3,7 @@
 # LOCAL HARDENING - DO NOT EDIT, DELETE OR "CLEAN UP" THIS FILE OR /Library/NullMoth/efiguard.
 # Keeps the fixes that live on the OpenCore ESP alive: AppleALC + alcid (built-in audio), Wi-Fi/BT kexts,
 # NVDSM, BrightnessKeys, VoodooI2C touchpad, SSDT-PS2KEYS ... Run by LaunchDaemon local.efiguard at boot and every 6 h.
-# Install / refresh the snapshot after a DELIBERATE EFI change:  sudo -E ESP_DEV=<disk> ESP_UUID=<uuid> zsh efiguard/install.sh
+# Install / refresh the snapshot after a DELIBERATE EFI change:  sudo -E ESP_UUID=<uuid> zsh efiguard/install.sh
 # Policy (same spirit as nvguard): repair only what is MISSING or has lost one of OUR fixes; a file that merely differs
 # from the snapshot (a deliberate update?) is left alone and logged as ATTENTION. The ESP is mounted read-only first and
 # written only when a repair is needed; every changed file is copied to /Library/NullMoth/efiguard-replaced first.

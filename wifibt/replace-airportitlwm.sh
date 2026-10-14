@@ -1,13 +1,13 @@
 #!/bin/bash
 # Replace EFI/OC/Kexts/AirportItlwm.kext on the ESP with your own init-recovery build (put it in wifibt/kexts/AirportItlwm.kext,
 # build steps in initrec/README.md). mtools on the block device, so it also works from safe mode.
-# Run as root:  sudo -E ESP_DEV=<disk> ESP_UUID=<uuid> bash replace-airportitlwm.sh            install
-#               sudo -E ESP_DEV=<disk> ESP_UUID=<uuid> bash replace-airportitlwm.sh undo DIR   put back the kext saved in DIR
+# Run as root:  sudo -E ESP_UUID=<uuid> bash replace-airportitlwm.sh            install
+#               sudo -E ESP_UUID=<uuid> bash replace-airportitlwm.sh undo DIR   put back the kext saved in DIR
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 [ "$(id -u)" -eq 0 ] || { echo "STOP: run with sudo"; exit 1; }
-DEV=${ESP_DEV:?set ESP_DEV to your OpenCore ESP, e.g. disk1s4 (see: diskutil list)}
-[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = ${ESP_UUID:?set ESP_UUID to the Partition UUID of that ESP (diskutil info $ESP_DEV)} ] || { echo "STOP: $DEV is not the expected ESP"; exit 1; }
+ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}; DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}   # disk numbers move between boots: find the ESP by its partition UUID
+[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] || { echo "STOP: $DEV is not the expected ESP"; exit 1; }
 diskutil unmount $DEV >/dev/null 2>&1 || true
 export PATH=/usr/local/bin:$PATH MTOOLS_SKIP_CHECK=1
 I=(-i /dev/$DEV)

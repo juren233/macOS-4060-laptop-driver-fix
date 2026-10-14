@@ -7,6 +7,6 @@
 - `revert-alc.sh`：恢复到第一次运行前的备份并移除 AppleALC。
 - `SOURCE.txt`：AppleALC 的下载地址和 sha256（本仓库**不含**这个二进制）。
 
-需要 `ESP_DEV` / `ESP_UUID`（见仓库根目录 README 的“快速上手”），脚本以 root 运行。
+需要 `ESP_UUID`（见仓库根目录 README 的“快速上手”），脚本以 root 运行（`sudo -E`）。
 
 **macOS 26** 把 AppleHDA 从系统里删了，AppleALC 无从下手：先按 [tahoe/README.md](../tahoe/README.md) 跑 `tahoe/audio/install-hda26.sh`（还需要 ESP 上的 BTLEFix 1.0.6），见 docs/fixes.md 第 33 项。

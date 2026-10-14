@@ -14,8 +14,8 @@ rm -rf /Library/Extensions/NVRMFB.kext && ditto "$BK/NVRMFB.kext" /Library/Exten
   && chown -R root:wheel /Library/Extensions/NVRMFB.kext && chmod -R 755 /Library/Extensions/NVRMFB.kext || die "NVRMFB.kext restore failed"
 cp -p "$BK/AuxiliaryKernelExtensions.kc" /Library/KernelCollections/AuxiliaryKernelExtensions.kc || die "collection restore failed"
 cmp -s "$BK/AuxiliaryKernelExtensions.kc" /Library/KernelCollections/AuxiliaryKernelExtensions.kc && echo "   ok  NVRMFB + auxiliary collection"
-DEV=${ESP_DEV:?set ESP_DEV to your OpenCore ESP, e.g. disk1s4 (see: diskutil list)}; export PATH=/usr/local/bin:$PATH MTOOLS_SKIP_CHECK=1; I=(-i /dev/$DEV)
-[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = ${ESP_UUID:?set ESP_UUID to the Partition UUID of that ESP (diskutil info $ESP_DEV)} ] || die "$DEV is not the expected ESP"
+ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}; DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}; export PATH=/usr/local/bin:$PATH MTOOLS_SKIP_CHECK=1; I=(-i /dev/$DEV)
+[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] || die "$DEV is not the expected ESP"
 diskutil unmount $DEV >/dev/null 2>&1 || true
 mdeltree "${I[@]}" ::/EFI/OC/Kexts/NVDSM.kext; mcopy "${I[@]}" -s -n "$BK/NVDSM.kext" ::/EFI/OC/Kexts/ || die "ESP NVDSM restore failed"
 sync

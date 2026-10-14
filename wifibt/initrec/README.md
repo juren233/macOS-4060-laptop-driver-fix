@@ -36,7 +36,7 @@ xcodebuild -project itlwm.xcodeproj -scheme AirportItlwm-Sequoia -configuration 
 产物（`build/out/Release/Sequoia/AirportItlwm.kext`）放到 `wifibt/kexts/AirportItlwm.kext`，然后：
 
 ```bash
-sudo -E ESP_DEV=disk1s4 ESP_UUID=<你的 ESP Partition UUID> bash wifibt/replace-airportitlwm.sh
+sudo -E ESP_UUID=<你的 ESP Partition UUID> bash wifibt/replace-airportitlwm.sh
 ```
 
 脚本先把 ESP 上原来的 kext 备份到 `wifibt/backup/esp-aitlwm-<时间>`，替换后逐字节读回比对；撤销：`... replace-airportitlwm.sh undo <备份目录>`。

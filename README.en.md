@@ -12,7 +12,7 @@ scripts, regression test programs, and the analysis behind each fix.
 
 > ⚠️ This modifies kernel extensions, system GPU plugins, OpenCore config and ACPI. Back up your EFI and keep a bootable fallback.
 > Provided as is, no warranty. Machine-specific values (ESP device/UUID, panel IDs, binary hashes/offsets) must be adapted — scripts that
-> touch the ESP refuse to run unless `ESP_DEV` and `ESP_UUID` are exported (`tahoe/`, `efiguard/` and the 1.15.0 kext scripts need only `ESP_UUID`: disk numbers move between boots on macOS 26). See [docs/applying.md](docs/applying.md) (Chinese).
+> touch the ESP refuse to run unless `ESP_UUID` (the partition UUID of your OpenCore ESP) is exported; they look the disk up by that UUID every time, because disk numbers move between boots (seen on macOS 26). See [docs/applying.md](docs/applying.md) (Chinese).
 
 ## Versions and applicability
 

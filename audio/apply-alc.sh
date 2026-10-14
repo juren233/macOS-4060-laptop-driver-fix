@@ -1,7 +1,7 @@
 #!/bin/bash
 # Add AppleALC (reference machine: Realtek ALC256, subsystem 1558:25E1, Clevo) to the OpenCore ESP and select a layout through
 # the alcid= boot-arg. Patches the LIVE config.plist in place (after a backup), idempotent: re-run with another layout
-# number to switch layouts.  Run as root:  sudo -E ESP_DEV=... ESP_UUID=... bash apply-alc.sh [layout]   (default 11)   Undo: revert-alc.sh
+# number to switch layouts.  Run as root:  sudo -E ESP_UUID=... bash apply-alc.sh [layout]   (default 11)   Undo: revert-alc.sh
 # AppleALC.kext is NOT shipped here: download the 1.9.8 RELEASE zip (see SOURCE.txt), unpack it, and point APPLEALC_KEXT at the .kext (default ./kexts/AppleALC.kext).
 # ALC256 layouts shipped in AppleALC 1.9.8: 5 11 12 13 14 16 17 19 20 21 22 23 24 28 33 38 41 48 49 56 57 66 67 68 69 70 76 77 88 95 97 99 100
 set -euo pipefail
@@ -9,8 +9,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 LAYOUT=${1:-11}
 case "$LAYOUT" in ''|*[!0-9]*) echo "STOP: layout must be a number"; exit 1;; esac
 [ "$(id -u)" -eq 0 ] || { echo "STOP: run with sudo"; exit 1; }
-DEV=${ESP_DEV:?set ESP_DEV to your OpenCore ESP, e.g. disk1s4 (see: diskutil list)}
-[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = ${ESP_UUID:?set ESP_UUID to the Partition UUID of that ESP (diskutil info $ESP_DEV)} ] || { echo "STOP: $DEV is not the expected ESP"; exit 1; }
+ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}; DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}   # disk numbers move between boots: find the ESP by its partition UUID
+[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] || { echo "STOP: $DEV is not the expected ESP"; exit 1; }
 KEXT=${APPLEALC_KEXT:-$HERE/kexts/AppleALC.kext}
 [ -f "$KEXT/Contents/Info.plist" ] || { echo "STOP: AppleALC.kext not found at $KEXT (download it, see SOURCE.txt, or set APPLEALC_KEXT)"; exit 1; }
 

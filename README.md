@@ -115,12 +115,11 @@ docs/                     详细文档
 ## 快速上手
 
 1. 读 [docs/applying.md](docs/applying.md)：怎么拿到上游源码、打补丁、编译插件/翻译器、替换到系统。
-2. 凡涉及 OpenCore ESP 的脚本，先导出你自己的分区信息（脚本会拒绝在未设置时运行）：
+2. 凡涉及 OpenCore ESP 的脚本，先导出你那块 ESP 的**分区 UUID**（脚本会拒绝在未设置时运行）：
    ```bash
-   export ESP_DEV=disk1s4                                   # 你的 ESP，diskutil list 查看（盘号每次开机可能不同，用前再查一次）
-   export ESP_UUID=$(diskutil info $ESP_DEV | awk -F': *' '/Partition UUID/{print $2}')
+   export ESP_UUID=$(diskutil info disk1s4 | awk -F': *' '/Partition UUID/{print $2}')   # disk1s4 换成你现在的 ESP（diskutil list）
    ```
-   `tahoe/`、`efiguard/`、1.15.0 的内核扩展脚本只认 `ESP_UUID`，自己按 UUID 找盘；用 `sudo -E` 把变量带进去。
+   脚本每次运行时按这个 UUID 自己找盘——盘号每次开机可能不同（macOS 26 上见过 `disk1s4` / `disk0s4`），所以不再用盘号。用 `sudo -E` 把变量带进去。
 3. 先在 `--check` / 备份模式下运行，确认再安装。
 
 ## 许可证

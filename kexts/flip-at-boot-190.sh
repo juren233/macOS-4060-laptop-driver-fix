@@ -19,8 +19,8 @@ echo "== 1/3 install kexts (NVRM: head-scaler + flip-at-boot patches)"
 bash "$HERE/install-kexts-190.sh"
 
 echo "== 2/3 OpenCore config on the ESP + live NVRAM: drop -nvrmnoflip"
-DEV=${ESP_DEV:?set ESP_DEV to your OpenCore ESP, e.g. disk1s4 (see: diskutil list)}
-[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = ${ESP_UUID:?set ESP_UUID to the Partition UUID of that ESP (diskutil info $ESP_DEV)} ]
+ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}; DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}   # disk numbers move between boots: find the ESP by its partition UUID
+[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ]
 diskutil unmount $DEV >/dev/null 2>&1 || true
 MP=$(mktemp -d /private/var/tmp/esp.XXXX); mount -t msdos /dev/$DEV "$MP"
 CUR=$(python3 -c "import plistlib,sys; p=plistlib.load(open(sys.argv[1],'rb')); print(p['NVRAM']['Add']['$UUID'].get('boot-args',''))" "$MP/EFI/OC/config.plist")

@@ -9,8 +9,8 @@ die() { echo "STOP: $*"; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
 ACT=${1:-}; ARG=${2:-}
 { [ "$ACT" = add ] || [ "$ACT" = remove ]; } && [ -n "$ARG" ] || die "usage: oc-bootarg.sh add|remove <arg>"
-DEV=${ESP_DEV:?set ESP_DEV to your OpenCore ESP, e.g. disk1s4 (see: diskutil list)}; export PATH=/usr/local/bin:$PATH MTOOLS_SKIP_CHECK=1; I=(-i /dev/$DEV)
-[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = ${ESP_UUID:?set ESP_UUID to the Partition UUID of that ESP (diskutil info $ESP_DEV)} ] || die "$DEV is not the expected ESP"
+ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}; DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}; export PATH=/usr/local/bin:$PATH MTOOLS_SKIP_CHECK=1; I=(-i /dev/$DEV)
+[ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] || die "$DEV is not the expected ESP"
 diskutil unmount $DEV >/dev/null 2>&1 || true
 PB=/usr/libexec/PlistBuddy; K=":NVRAM:Add:7C436110-AB2A-4BBB-A880-FE41995C9F82:boot-args"
 T=$(mktemp -d /var/tmp/bootarg.XXXX)

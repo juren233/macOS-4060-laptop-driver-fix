@@ -421,8 +421,7 @@ macOS 26 专用的脚本都在 [`tahoe/`](../tahoe/README.md)。作者本机：m
   **别用升级前的 EFI 备份救 26**：它没有 `-no_compat_check`，26 开不了机。
 - **恢复模式入口**（`tahoe/add-ocrec.sh`，适用于用 Limine 引导 OpenCore 的布局）：把 `EFI/OC` 复制成 `EFI/OCREC`（同样的 kext / ACPI / boot-args，26 仍能启动），
   把副本的 `config.plist` 设成立即显示 OpenCore 选单（`ShowPicker`、`Timeout 0`、`HideAuxiliary false`），并在 Limine 菜单里加一项 “macOS Recovery”。`EFI/OC` 本身不变；`add-ocrec.sh undo` 撤销。
-- **盘号会变**：26 上 ESP 有时是 `disk1s4`、有时是 `disk0s4`。`tahoe/`、`efiguard/`、1.15.0 内核扩展脚本都按分区 UUID（`ESP_UUID`）找 ESP；
-  仓库里其余还要 `ESP_DEV` 的脚本，每次运行前请先 `diskutil list` 确认。
+- **盘号会变**：26 上 ESP 有时是 `disk1s4`、有时是 `disk0s4`。仓库里所有改 ESP 的脚本都按分区 UUID（`ESP_UUID`）找 ESP，不再用盘号。
 - 升级后检查：Wi-Fi、蓝牙、亮度、声音（第 33 项）、电源（第 34 项）、HiDPI@165Hz。**不要测系统睡眠**（不受支持，见 docs/pitfalls.md）。
 
 ### 33. macOS 26 没有内置声卡（AppleHDA 被移除）
