@@ -10,6 +10,10 @@
 - 一次性测试**别用 `nvram boot-args=…`**：OpenCore 会按 ESP 配置重写，重启就没了；改 ESP 里的 `config.plist`（`wifibt/oc-bootarg.sh`）。
 - 插件旋钮只能写 `nvrm610.conf`：发行版插件在启动时 `unsetenv` 所有 `NVMTL_*` 变量。`killall WindowServer` 带着某些旋钮会黑屏，换旋钮集请**重启**。
 - 重装 NullMoth 驱动会重写 `nvrm610.conf` 和 dylib，上面的二进制补丁、`NVMTL_SURF_SHARE_MINPX`、`NVMTL_NO_NVENC_HEVC` 都会丢，这就是 `nvguard/` 存在的原因。
+- **不要让系统睡眠**（合盖、苹果菜单“睡眠”）：NullMoth 的 NVRM（直到 1.15.0）没有 GPU 的挂起/恢复，唤醒后 GPU 读出 `0xbadf5620`、“GSP core unresponsive”、Xid 119，屏幕不亮，只能强制关机。
+  作者设了 `sudo pmset -a SleepDisabled 1`（合盖也不睡）。显示器休眠没问题。
+- **macOS 26 上 ESP 的盘号会变**（这次开机 `disk1s4`，下次 `disk0s4`）。写死盘号的脚本会去查错盘或停下；用分区 UUID 找（本仓库的 `tahoe/`、`efiguard/`、1.15.0 内核扩展脚本都这么做）。
+- **救 macOS 26 别用升级前的 EFI 备份**：iMacPro1,1 上没有 `-no_compat_check` 的配置 26 开不了机。用 `tahoe/` 的救援配置（`RESCUE.md`）。
 
 ## 调试习惯
 - 窗口截图正确 ≠ 物理屏幕正确（出现过“窗口捕获正常、屏幕全黑”）。
@@ -22,6 +26,8 @@
 - 沙箱里的 WindowServer 只能写 `/private/tmp`、`/private/var/tmp`、`TMPDIR`，诊断日志放这里。
 - `dtrace -p WindowServer` 被 SIP 挡，用 `spindump WindowServer 10`；内核符号用 `nm /System/Library/Kernels/kernel`（基址 `0xffffff8000200000`）。
 - UU 的信号处理会把崩溃全部变成 SIGKILL；要看真正的崩溃需 get-task-allow 重签名后进 lldb。
+- macOS 26 的 `kmutil` 默认不把第三方目录里 Apple 前缀的 kext（如放回去的 AppleHDA）放进辅助内核集合，要 `-b <bundle id>` 点名；放在 `/Library/Extensions` 的 Apple kext 还会被 `kernelmanagerd` 拒绝建资源表（“restricted lookup table”），要放 `/Library/Apple/System/Library/Extensions`。
+- 内核里 `evaluateInteger` 绝对 ACPI 路径时每段名字要补足 4 个字符（`\_SB_.AC__`）；不存在的名字和求值出错返回同一个 `0xE00002BC`，要配一个确定存在的哨兵名字来区分。
 - 在 Claude Code 里跑需要 sudo 的脚本：命令行版的 `!` 命令没法输入密码，请在 Terminal.app 里跑；桌面版可以在它的终端面板里输入密码。
 
 - **看流畅度要量 WindowServer 实际上屏的帧数，不是网页里的 `requestAnimationFrame`**。智能防挡弹幕时 Chrome 的 rAF 一直是 165 fps，实际上屏只有约 90。
@@ -34,6 +40,6 @@
   要抓事件前后的日志，事后 `log show --start …` 就够了（`tools/usb-watch/` 就是这样做的）。
 
 ## 机器/版本相关
-- 本仓库所有二进制补丁都绑定 **NullMoth 1.9.0 / 1.0.10** 的具体构建（NVK 的 `mk-nomem-190.py` 和 NVDEC 的 `mk-detile8.py`、`mk-sleep.py` 也一样），升级后偏移会变；脚本会断言，报错就是该重新推导而不是硬改。
-- macOS 更新可能破坏 kext / 插件；ESP 上的修复由 `efiguard/` 守护（见 docs/fixes.md 第十节），NVRAM 里的 `csr-active-config` 不在任何守护范围（`nvguard/verify.sh` 会提示）。
+- 本仓库的二进制补丁都绑定具体构建：NVRM 有 1.9.0（`patch-nvrm-190.py`）和 1.15.0（`patch-nvrm-115.py`）两版；NVK、NVDEC、NVENC 的补丁只针对 **NullMoth 1.9.0 / 1.0.10**（1.15.0 安装包里的编解码库不同，NVK 则不再需要补丁），升级后偏移会变；脚本会断言，报错就是该重新推导而不是硬改。
+- macOS 更新可能破坏 kext / 插件；ESP 上的修复由 `efiguard/` 守护（见 docs/fixes.md 第十节），NVRAM 里的 `csr-active-config` 不在任何守护范围（`nvguard/verify.sh` 会提示）。macOS 26 每次更新后确认声卡（`tahoe/audio/install-hda26.sh` 可重复运行）。
 - Homebrew 7.x 起不再支持 Intel macOS（官方安装脚本在 x86_64 直接退出，也没有 bottle）：手动 `git clone Homebrew/brew` 到 `/usr/local/Homebrew` 并链接 `/usr/local/bin/brew`，之后一切源码编译。

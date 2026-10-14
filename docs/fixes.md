@@ -1,6 +1,7 @@
 # 修复详解
 
-编号与 [README](../README.md) 的表格一致。除特别说明外，环境为 macOS 15.8.1、NullMoth v1.9.0 内核扩展 + v1.14.2 用户态（插件、翻译器、NVK）、RTX 4060 Laptop（Ada）。
+编号与 [README](../README.md) 的表格一致。除特别说明外，环境为各项修复做出来时的 macOS 15.8.1、NullMoth v1.9.0 内核扩展 + v1.14.2 用户态（插件、翻译器、NVK）、RTX 4060 Laptop（Ada）。
+作者本机现在是 **macOS 26.7.1 + NullMoth 1.15.0 内核扩展与用户态 + 本仓库补丁**：1.15.0 补丁集见第九节（再续），macOS 26 见第十一节。
 “插件”= `/Library/GPUBundles/NVMTLDriver.bundle`（Metal 驱动），“翻译器”= 其中的 `libnvmtl_translate.dylib`（Apple AIR → SPIR-V），
 “NVK”= `libvulkan_nouveau.dylib`。
 
@@ -14,7 +15,7 @@
 ### 1. HiDPI（head scaler）
 - **死路**：窗口级（precomp）缩放在独显上被 NVKMS 隐藏；强行打开 caps 会出 Xid 56 `INVALID_STATE` 并整卡挂死。
 - **做法**：让**显示头（postcomp）**缩放。NVRM 二进制 26 字节补丁：`viewPortSizeIn` 取图层源尺寸，`sizeOut` 取源尺寸（`0x56/0x58 → 0x4e/0x50`）。
-  1.9.0 的偏移见 `kexts/patch-nvrm-190.py`（每个字节都先断言再写，可重复运行）。
+  1.9.0 的偏移见 `kexts/patch-nvrm-190.py`（每个字节都先断言再写，可重复运行）。1.15.0 的 NVRM 这段代码与 1.9.0 逐字节相同，只是整体后移 0x1590：`kexts/patch-nvrm-115.py`。
 - **165Hz 上限**：2560×1440@165 时 IMP 接受 ≤1.4× 降采样（looks like **1792×1008**，backing 3584×2016），1.425×（1824×1026）起被拒绝。
   更低刷新率能用更大的 looks-like（如 40Hz 的 1920×1080）。
 - `hidpi/overrides/DisplayProductID-b40.final` 是 BOE 0B40 的 HiDPI 列表（`scale-resolutions` 为大端 `宽,高,flags` 的 base64），
@@ -25,7 +26,7 @@
 ### 2. 启动即零拷贝翻转
 - NullMoth 的 `autoGo` 在释放 boot-hold **之后**还 `IOSleep(60000)` 才打开 `debug.nvaccel_iop_flip=1`，于是登录后、窗口已显示时才**热切换**扫描路径，
   已被拷贝路径扫描出去的表面（Dock）停止呈现，直到进程重启。
-- `IOSleep(60000)` → `IOSleep(0)`（源码补丁 `0003`，二进制补丁在 `patch-nvrm-190.py` 末尾）。
+- `IOSleep(60000)` → `IOSleep(0)`（源码补丁 `0003`，二进制补丁在 `patch-nvrm-190.py` 末尾；1.15.0 在 `patch-nvrm-115.py`，偏移 0x9467）。
 - 运行时关闭翻转是安全的（`sysctl debug.nvaccel_iop_flip=0`），**运行时再打开不安全**（Dock 会坏），需要重启。
 - 旧方案 `hidpi/legacy-1.0.10/nvflip/`（LaunchDaemon 延迟 60 秒再开）已被取代。
 
@@ -33,7 +34,7 @@
 
 ## 二、WindowServer / 插件（NVMTLDriver）
 
-当前补丁在 `patches/nullmoth-1.14.2/0001-plugin.patch`（累计；1.9.0、1.13.0 基线的旧版在各自目录），逐项独立 diff 在各目录的 `per-fix/`。
+当前补丁在 `patches/nullmoth-1.15.0/0001-plugin.patch`（累计；1.9.0、1.13.0、1.14.2 基线的旧版在各自目录），逐项独立 diff 在各目录的 `per-fix/`。
 
 ### 3. 黑块 / 残影 / 圆角变方
 排查走了很长的路，结论按层记录：
@@ -118,7 +119,7 @@
   5. **每帧一个新 IOSurface**（智能防挡的遮罩层）：每个新表面第一次被当纹理用时要导入显存（约 2 ms）。
      - 插件：死掉的纹理留下的 tiled 渲染影子按尺寸/格式“停车”复用（`per-fix/rsh-park.patch`，`NVMTL_RSH_PARK=0` 关闭）：`newsurf` 每个表面 CPU 1.48 → 0.93 ms。
      - 内核：NVRMFB 给每块新显存先用 CPU 经 BAR 清零（约 2.5 ms / 7.6 MB）。RM 的 scrub-on-free 已经用拷贝引擎清过（抽查约 2.1 万次分配，非零 0 次），
-       所以改为“抽样为零就不再清”（`patches/nullmoth-1.9.0/0006-nvrmfb-vram-noclear.patch`，`sysctl debug.nvrmfb_clear_mode`：0 原样、2 抽样为零即跳过=默认），弹幕时省约 10% 个核。
+       所以改为“抽样为零就不再清”（`patches/nullmoth-1.9.0/0006-nvrmfb-vram-noclear.patch`，1.15.0 版是 `patches/nullmoth-1.15.0/0003-nvrmfb-vram-noclear.patch`；`sysctl debug.nvrmfb_clear_mode`：0 原样、2 抽样为零即跳过=默认），弹幕时省约 10% 个核。
   6. `NVMTL_SURF_SHARE_MINPX=0`（所有窗口大小的 IOSurface 走共享显存）：智能防挡下 WindowServer CPU 80% → 55%，最长卡顿 42 → 18 ms；本机没有再出现第 3 项的黑块。
 - 当前 conf：`NVMTL_SCHEDULED_WAIT=0`、`NVRM_EVENT_WAIT=1`、`NVMTL_SURF_SHARE_MINPX=0`（`nvguard/` 会保持它们生效）。
 - **仍然存在的限制（不是驱动的问题）**：
@@ -145,6 +146,20 @@
      现在把剩余的存储缓冲也降到这张表上（`per-fix/translator-table-merge.patch`，`NVMTL_NO_TABLE_MERGE=1` 关闭）；本机 4639 个缓存模块：2580 个不变、2059 个合并，全部能被 NVK 编译。
 - 结果：`hidpi/catest/drawbench.m`（ANGLE 式结构体 uniform）3.13 → 1.56 µs/draw，图像逐字节一致；Aquarium 5000 条 41 → 73 fps、10000 条 24 → 39、20000 条 13 → 21。
 - 注意：比较修改前后的 GPU 输出要在**相同的着色器缓存状态**下进行（见 docs/pitfalls.md）。
+- ⚠ **回归与修正（1.15.0 补丁集）**：第 2 点的复用最初只看管线的绑定掩码，而掩码里不含存储纹理（storage texture）。VideoToolbox 的两遍缩放（“照片”“预览”的缩略图）第二遍只换了输出纹理，
+  于是复用了第一遍的描述符集、把结果写进了中间纹理，**所有两遍缩放出来的图都是空白**（1:1 或单轴缩放正常）。修正：存储纹理变了就不复用；变化位覆盖到 ≥63 号的存储槽位（原先越界写过 `chg[][4]`）；
+  拷贝掩码覆盖描述符写入时检查的每个槽位（`patches/nullmoth-1.15.0/per-fix/vt-storage-descriptor-reuse.patch`）。验证用上游的 `tools/bench_vt_transfer.m`：3/3 张坏图 → 0。
+  **1.14.2 补丁集里的 `descriptor-table-reuse` 带着这个问题**，请改用 1.15.0 补丁集，或把这处修正一起打上。
+
+### 30. Dock 图标角标数字只有放大时才看得见（tiled 纹理的 mipmap 链）
+- 现象（在 macOS 26 上发现，问题本身与系统版本无关）：Dock 上应用角标的红底在，数字不见；鼠标放大 Dock 时数字才出现。图标尺寸 78 能看到、62 很淡、50 完全没有。
+- 根因：角标数字是一个 108×108 的图层，`minificationFilter` 为 trilinear、`minificationFilterBias` −0.5，画进约 21 pt 的角标，必然用到 mip 第 1 级以上。
+  Core Animation 用私有接口 `newTiledTextureWithBytesNoCopy:`（落到插件的 `-[NVMTLBuffer newTiledTextureWithDescriptor:offset:bytesPerRow:]`）创建这种内容，描述符带 mipmap，
+  缓冲里只有第 0 级，**其余级别要由驱动生成**（Apple 的驱动就是这样）。插件的拷贝兜底只上传了第 0 级，第 1 级起全空 → 一缩小数字就淡没了。
+- 修复：上传第 0 级之后、以及每次从缓冲重新上传之后，生成整条 mip 链（`patches/nullmoth-1.15.0/per-fix/tiled-mips.patch`）。
+- 测试：`hidpi/catest/tiledmips.m` 直接调用这个私有接口并检查每一级（修复前 FAIL、修复后 PASS，库验证下也 PASS）。`plugshim` 复现不了：CA 在测试进程里看到的是另一个设备，会改走 managed 纹理 + `generateMipmaps`。
+- 排查备忘：Dock 进程不能用 lldb（SIP），但 AMFI 关着时可以 `launchctl setenv DYLD_INSERT_LIBRARIES …` + `killall Dock` + 立即 `unsetenv`，把 CALayer 树打出来；
+  测试进程里 `instrumentObjcMessageSends(YES)` 能列出 CA 发出的每个 Metal 调用（`/tmp/msgSends-<pid>`）。
 
 ---
 
@@ -191,6 +206,7 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
    - 修复：`libvulkan_nouveau.dylib` 2 字节补丁（open 标志 `0x1000002 → 0x1000000`，即 `O_RDWR|O_CLOEXEC` → `O_RDONLY|O_CLOEXEC`，偏移 1.0.10 为 0x12bfc8 / 0x12c0db），并把 `os_get_total_physical_memory` 重写成 `sysctlbyname("hw.memsize")`。
    - 脚本：`codec-vulkan/vulkan/vk-devnull.sh`、`vk-bindfix.sh`、`mk-bindfix.py`；1.9.0 版本的偏移用 `mk-bindfix-190.py` 重新推导。
    - 用 1.14.2 补丁集（含第 27 项的插件兜底）时，`hw.memsize` 改写不再需要，用 `mk-nomem-190.py` 去掉它；`/dev/null` 的只读补丁保留。
+   - **1.15.0 的原版 NVK 不再需要任何补丁**：上游已改为只读打开 `/dev/null`（e4d8ca8），解绑后再回收描述符池（我们的 bindfix）上游也修了（bee05d1），内存大小由插件兜底。
 - 调试备忘：往 Chrome 里 `DYLD_INSERT_LIBRARIES`，库必须 ad-hoc 签名，未签名的会被静默忽略（本机 AMFI 已关；默认的 hardened runtime 下根本注入不了）；GPU 进程从 `/tmp` 加载插件还会被沙箱挡（见 pitfalls）。
 - **Chrome 的 flags**：本机上 Graphite 与 GPU 栅格在早期构建下都渲染错误（半个四边形全黑 / 曲线路径缺失）。翻译器修复（第 9、13 项）和插件修复之后，作者现在 GPU 栅格和 Graphite 都开着（`#enable-gpu-rasterization`、`#skia-graphite` 均为 Enabled）。排错时的稳定组合仍是 `chrome://flags` → `#skia-graphite` Disabled，必要时 `#enable-gpu-rasterization` Disabled。
 - Electron 应用也会吃到这个环境变量；有问题时 `launchctl unsetenv ANGLE_FEATURE_OVERRIDES_DISABLED`。
@@ -201,6 +217,7 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
   同时 `sysconf(_SC_PHYS_PAGES)` 需要的 `hw.pagesize` 也被拒绝。
 - 修复：回移植上游 1.14.5 / 1.14.6 的插件兜底——连 `/dev/null` 都打不开时用一根管道的读端当占位 fd；物理内存大小改由插件用 `host_info` 回答（重绑 `sysconf`）。
   因此 NVK 不再需要我们的 `hw.memsize` 改写：`codec-vulkan/vulkan/mk-nomem-190.py` 把那段恢复成原样。**两者必须一起换**：旧插件配新 NVK，在 Chrome 沙箱里会拿不到设备（“Failed to query total system memory”）。
+- 1.15.0 起上游已包含这两处（原版插件 + 原版 NVK 即可，本仓库的 1.15.0 补丁集也保留着它们）。
 - 测试：`hidpi/catest/ffsandbox.m` 用 Firefox 的沙箱规则启动 Metal blit + CGL 清屏并回读（需要自己从 Firefox 源码导出 `SandboxPolicyGPU.h` 的规则存为 `ffsandbox-gpu.sb`，MPL 代码不随本仓库分发）。旧组合 0/2，新组合 2/2。
 
 ---
@@ -208,6 +225,8 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 ## 五、视频编解码（二进制补丁，NullMoth 只发布二进制）
 
 共同根因：NullMoth 的编解码器是在 **Blackwell** 上做的，Ada（RTX 40）的 NVENC/NVDEC 用的是 **t2d GOB 布局**，而代码按 bw8（亮度）/bw16（色度）块布局读写。
+
+这些字节补丁都针对 **1.9.0 的二进制**。作者在 1.15.0 下仍在用这几个基于 1.9.0 的补丁版编解码库（`nvguard/` 会放回去）；1.15.0 安装包自带的 `libnvdec_h264*.dylib`、`libnvenc_h264.dylib` 与 1.9.0 不同，未评估，脚本也不认它们。
 
 ### 14. NVDEC H.264 竖条纹
 - `libnvdec_h264.dylib` 的 `emit_picture` 以 mode 1 调 `nvd264_detile`（`mov $1,%edx`，0x163d）；Ada 写出的是 mode 0。**0x163e 处 `01 → 00`** + ad-hoc 重签名。
@@ -245,6 +264,8 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - **NVRMFB 补丁**（`patches/nullmoth-1.9.0/0004`）：把内部 eDP 标成 `kIOConnectionBuiltIn`，`getAppleSense` 返回 kGenericLCD，在 `IOResources` 下创建 "backlight" 服务（`gIOFBHaveBacklight` → `AppleBacklightDisplay`），`NVRMBacklightHandler` 提供 `brightness`、`linear-brightness`（WindowServer 实际驱动的是 `linear-brightness`）及 `*-probe`。
 - **Fn 亮度键 / 电池**：OC 的 `SSDT-EC.aml` 用 `_OSI("Darwin")` 把真实 EC0 对 macOS 隐藏（`_STA` 返回 0）→ 无 AppleACPIEC、无 `_Qxx`、`BatteryInstalled=No`。`backlight/enable-ec.sh` 把那个字符串改名成 `"EC0_ON"`（并修校验和），EC0 绑定后 `_Q11/_Q12 → Notify(LCD0, 0x86/0x87)`，再由 **BrightnessKeys** 转为按键。`backlight/rescue/` 里有 Linux/Windows 下恢复原 SSDT-EC.aml 的救援脚本（原始 AML 内嵌）。
 - 安装 `backlight/install-builtin-bl.sh`，撤销 `revert-builtin-bl.sh`（也可以从安全启动项用）。
+- **1.15.0 内核扩展**：上游 NVRMFB 自带同样设计的背光（`NVRMBacklight` 处理器，NVRM 里由 `nvkms_xnu_backlight` 注册），所以不再需要 `0004`。
+  NVDSM 检测到 NVRM 导出 `_nvkms_xnu_backlight` 时就**不再接管** `nvkms_(un)register_backlight`（否则上游 NVRMFB 拿不到背光），`_DSM`/`_DOD` 仍由 NVDSM 提供（上游要 `nvrmacpibl=1` 才开自己的）。配 1.9.0 的 NVRM 时行为不变。
 - 其它工具：`nvbl.c`（用户态读写 NVKMS 背光，免 root）、`nvaux.c`（通过 RM 访问 eDP AUX/DPCD）、`dump-acpi.py`（拆分 NVDSM 导出的 DSDT/SSDT）。
 
 ### 18. Wi-Fi 与蓝牙（Intel AX211）
@@ -258,6 +279,9 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
   6. `wifibt/IntelBTProductName/`（无代码 kext，经 AppleUSBHostMergeProperties 把 USB 产品名合并为 `Intel Wireless Bluetooth`）：让 bluetoothd 把 Intel 控制器当作**外置 dongle** 而非内置（内置模式会跑 Broadcom 的 VSC 初始化而失败，STATUS 712）。
 - ⚠ BTLEFix v2 曾因为在 `IOUSBHostPipe::io` 的**完成回调**里读传输缓冲区导致 `IOGMD: not wired for the IODMACommand` panic。教训：永远不要在完成回调里碰 USB 传输的描述符，也不要 hook 所有 USB I/O；v3 起只 hook `idVendor 0x8087` 的 `deviceRequest`。
 - `-btlefixoff` boot-arg 可停用 BTLEFix。
+- **macOS 26**：Wi-Fi 用 AirportItlwm 的 Tahoe 构建（同一份 laobamac `d695c97` + 下面的初始化自愈补丁，按 Tahoe 方案编译），作为 `config.plist` 里的第二个条目（`MinKernel 25.0.0`；Sequoia 条目 `MaxKernel 24.99.99`），
+  OpenCore 按内核版本注入对应的那个（`tahoe/prep-efi-26.sh`）。蓝牙：26 的 bluetoothd 是同一段代码，只是第一个位移从 0x49 变成 0x69，BTLEFix 1.0.6 两种都打。
+  BTLEFix / NVDSM 的 Lilu 最高内核版本要放到 Tahoe，否则 Lilu 在 26 上直接跳过它们。BTLEFix 1.0.6 还兼做 macOS 26 声卡的资源请求应答（第 33 项）。
 
 - **开机偶发一直“未连接”（在上面原生 Wi-Fi 基础上的稳定性修复）**：
   - 不是运行中掉线，而是有的开机 `en2` 从没起来（`ifconfig en2` 有 `UP` 没 `RUNNING`），手动开关 Wi-Fi 才好。
@@ -284,6 +308,7 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
   ALC256 一共有 30 多个 layout，别的机器要逐个试。`audio/apply-alc.sh [layout]` 修改 ESP 的 `config.plist`（`Kernel/Add` + `boot-args`），先备份，可重复运行换 layout，`revert-alc.sh` 回滚。
 - 验证：重启后 `system_profiler SPAudioDataType` 出现 Built-in Microphone / Built-in Output。默认输出设备会保持上次使用的（USB 音箱），需要在系统设置里手动切一次。
 - 踩坑：PlistBuddy 在**一次调用里连续多个 `-c`** 往数组末尾 `Add dict` 再 `Add` 字段时，新元素会变成上一个元素的副本（报 "Entry Already Exists"）；每条命令单独调用一次就正常。
+- **macOS 26** 删掉了 AppleHDA，AppleALC 无从下手，见第 33 项。
 
 ---
 
@@ -299,9 +324,13 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - 现象（上游报告，本机未复现）：零拷贝翻转开启后，移动鼠标时偶尔有旧画面闪一下；`-nvrmnoflip` 后消失。
 - 根因：NVRMFB 的 `cursorApply()` 提交光标时顺带把主画面（`fFrontSurf`）也提交一遍，于是每次光标移动都是一次主画面翻转，并按垂直同步节拍；如果零拷贝翻转恰在读取 `fFrontSurf` 与提交之间锁存了更新的帧，旧帧会被放回屏幕，直到下一次翻转。
 - 修复：移植上游 1.13.0 的做法——光标提交只带光标，`submitConfig(…, cursorOnly=true)` 跳过主层。补丁 `patches/nullmoth-1.9.0/0005-nvrmfb-cursor-only.patch`（叠加在 0004 之后）。
-- 验证：作者本机编译安装后重启，HiDPI@165Hz、零拷贝计数、亮度、睡眠唤醒均正常。内核扩展安装有重启和黑屏风险，先备份并准备恢复模式回滚。
+- 验证：作者本机编译安装后重启，HiDPI@165Hz、零拷贝计数、亮度、显示器休眠唤醒均正常（**系统睡眠**不受支持，见 docs/pitfalls.md）。内核扩展安装有重启和黑屏风险，先备份并准备恢复模式回滚。
+- 1.15.0 的 NVRMFB 本身就是这个做法，不需要 `0005`。
 
----
+### 31. 微信输入法开机后在自启应用里打不了字
+- 与驱动无关，但每次开机都会碰到。随登录自启的应用（Claude 桌面端、Steam 等）在 WeType 向 `imklaunchagent` 登记之前就来要它的端点，拿到 `NO Endpoint` 后**一直缓存**，
+  只有这些应用打不了字；WeType 进程本身是健康的。只杀 `imklaunchagent` 反而更糟，必须连 WeType 一起重启。
+- 修复：LaunchAgent 在登录时 `open -g` 先把 WeType 启动起来。**不能用 `open -j`**（隐藏启动）：那样候选词窗口不显示。详见 [tools/wetype/README.md](../tools/wetype/README.md)。
 
 ---
 
@@ -320,7 +349,8 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 
 ## 参考：内部版本演进（作者本机）
 
-插件版本链：v46 → v47（持久化 pipeline cache）→ v48（合入上游 1.9.0：采样器负 LOD、`shaderDrawParameters`、GL zero-net、翻译器的 base_vertex/base_instance；260/260 缓存着色器逐字节一致）→ tiled 渲染影子 → selffetch → gl-sample-positions → 合入 1.13.0（compute stage_in、Unknown 用途、采样器数组）→ 合入 1.14.2（`d8aa6e31`）→ 暂存缓冲复用（`ac789120`）→ 提前提交（`3108990a`）→ 渲染影子复用（`4eb05cf4`）→ 沙箱兜底 + Unity 锁（`dbbc77ec`）→ 单次绘制开销（`93c3be14`）；翻译器：`761a54b4`（顶点输出）→ `eb4fb6a3`（Lanczos）→ `50471f26`（1.13.0）→ `aa11ce8d`（采样器数组）→ `f62a16e5`（1.14.2）→ `2a3e7ea7`（地址表合并）。NVK：`d94ea1a3`（bindfix）→ `19bbfc23`（去掉 `hw.memsize` 改写）。
+插件版本链：v46 → v47（持久化 pipeline cache）→ v48（合入上游 1.9.0：采样器负 LOD、`shaderDrawParameters`、GL zero-net、翻译器的 base_vertex/base_instance；260/260 缓存着色器逐字节一致）→ tiled 渲染影子 → selffetch → gl-sample-positions → 合入 1.13.0（compute stage_in、Unknown 用途、采样器数组）→ 合入 1.14.2（`d8aa6e31`）→ 暂存缓冲复用（`ac789120`）→ 提前提交（`3108990a`）→ 渲染影子复用（`4eb05cf4`）→ 沙箱兜底 + Unity 锁（`dbbc77ec`）→ 单次绘制开销（`93c3be14`）→ 合入 1.15.0（`133fa823`）→ VideoToolbox 回归修正（`e8328b6a`）→ tiled 纹理 mip 链（`b4041b08`）；翻译器：`761a54b4`（顶点输出）→ `eb4fb6a3`（Lanczos）→ `50471f26`（1.13.0）→ `aa11ce8d`（采样器数组）→ `f62a16e5`（1.14.2）→ `2a3e7ea7`（地址表合并）→ `70c04748`（1.15.0）。NVK：`d94ea1a3`（bindfix）→ `19bbfc23`（去掉 `hw.memsize` 改写）→ `403d4d40`（1.15.0 原版，无补丁）。
+内核扩展：1.0.10 → 1.9.0 + 本仓库补丁 → 1.15.0 + 本仓库补丁（NVRM `9794974b`、NVRMFB `79d60d24`）。
 `nvguard/` 里记录的哈希就是这些构建的 sha256（你自己的构建哈希不会相同）。
 
 ## 九、1.13.0 用户态补丁集
@@ -330,7 +360,7 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - 额外一处本地改动：1.13 只在 Blackwell 上注册 NVENC，Ada 上我们的 NVENC 补丁（修复 15）会被绕开，所以插件默认在所有 GPU 上注册，在 `nvrm610.conf` 里写 `NVMTL_NVENC_BLACKWELL_ONLY=1` 才恢复上游行为（1.14.2 版同样如此）。
 - **没有**升级内核扩展。1.9.0→1.13.0 期间 NVRM 核心源码没有变化，变化的只有 NVAccel（无头 GPU、Intel 内置屏，仅用于面板不在独显上的笔记本）、NVRMFB（光标，已移植为修复 21；另有“多列出分辨率”，未移植）、新增的 NMIntelFB 与 NMHDA。对独显直连的机器升级没有收益，所以内核扩展仍以 1.9.0 为基线；若要升级，NVRM 与 NVK 的字节补丁偏移量需针对 1.13.0 的二进制重新核对。
 
-## 九（续）、1.14.2 用户态补丁集（当前推荐）
+## 九（续）、1.14.2 用户态补丁集
 
 `patches/nullmoth-1.14.2/` 是插件和翻译器的全部本地修改整理到**上游 v1.14.2** 之上的差异（`0001-plugin.patch` 含 `build/build_plugin.sh`，`0002-translator.patch`）。
 已验证：在原版 v1.14.2 上干净应用，应用后的源码与作者实际在用的构建一致（只有注释里的路径不同），插件可编译。
@@ -341,6 +371,23 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
   便于阅读；其中 `eager-submit`、`translator-table-merge`、`upstream-sandbox-unity-backport` 能单独打在原版 v1.14.2 上，其余依赖前面的本地修改，请直接用 `0001`/`0002`。
 - 编译插件时要链接 `-framework IOKit -framework CoreVideo`（构建脚本已更新）。内核扩展仍以 1.9.0 为基线（`0003–0006`）。
 - 上游 1.14.3–1.14.7 的其余改动（AM5 平台、复制路径闪烁、核显面板、ANGLE 自动开启等）对独显直连 + 零拷贝翻转的机器没有收益，未合入。
+- ⚠ 这一套里的 `descriptor-table-reuse` 会让 VideoToolbox 的两遍缩放输出空白（第 29 项的回归），1.15.0 补丁集已修。
+
+## 九（再续）、1.15.0 补丁集（当前推荐：用户态 + 内核扩展）
+
+`patches/nullmoth-1.15.0/` 是全部本地修改整理到**上游 v1.15.0** 之上的差异：`0001-plugin.patch`（含 `build/build_plugin.sh`）、`0002-translator.patch`、`0003-nvrmfb-vram-noclear.patch`（内核扩展）。
+已验证：在原版 v1.15.0 上干净应用，应用后的 `plugin/`、`build/`、`translator/`、`kexts/` 与作者在用的构建一致（只有注释里的路径不同），插件可编译（`-mmacosx-version-min=15.0`）。
+`translator/translator/Cargo.lock` 不在这一套补丁里，用上游的即可。
+- 从上游 1.15.0 合入/取舍：插件拿了 IOSurface 页面的流式读取（1baebac：写合并页面上的窗口拷贝最多快 35 倍；也用在我们自己的异步上传路径上）和 `sysconf` 重绑的边界检查（b25058b）；
+  **没拿** bee05d1 的插件部分（每表面监视器、写映射、IOSurface 纹理缓存：v47 起同一表面已共享一个私有图像，而它会在每次 draw 的路径上多一把全局锁）。
+  翻译器拿了“绑定采样器的 kernel 保留 threadgroup 内存长度”（2009ced：VideoToolbox 缩放输出整列为零 = “照片”里的绿线）和“缓冲类型重映射后保留阶段输出”（4b0a8c7，与第 9 项的 `type_def_of` 兜底合并）。
+- NVK：1.15.0 原版 `libvulkan_nouveau.dylib` **不再需要我们的任何补丁**（第 5、27 项）。
+- 内核扩展：NVRM = 1.15.0 + `kexts/patch-nvrm-115.py`（head-scaler + 启动即翻转，改动与 1.9.0 相同，代码后移 0x1590）；NVRMFB = 1.15.0 源码 + `0003`（`kexts/build-fb-115.sh`）；NVAccel、NVRMAGDC 用原版。
+  上游 1.15.0 自带背光（第 17 项）和“光标只提交光标”（第 21 项），1.9.0 的 `0004`、`0005` 不再需要；另外上游修了 512 个 `nvSVPend` 槽位的泄漏（79e1c2f）。
+  安装：`kexts/install-kexts-115.sh`（在 macOS 15 上；`--check` 只建测试内核集合，带备份，`rollback-kexts-115.sh` 回滚；脚本里的哈希是作者的构建，换成你的）。
+  装后核对：165 Hz、1792×1008 HiDPI、亮度键与滑块、零拷贝翻转（`flip=1`）都在，`debug.nvrmfb_clear_skipped` 在增长。
+- 1.15.0 是上游“最后一个支持 macOS 15 的版本”，安装包里同时带了 macOS 26 用的 NVAccel（`/Library/NullMoth/kexts/26`），升级到 26 见第十一节。
+- 1.15.0 之后的本地修复：第 29 项的 VideoToolbox 回归修正、第 30 项。`per-fix/` 是各自的单独提交，依赖前面的本地修改，请直接用 `0001`。
 
 ## 十、ESP 守护（efiguard）
 
@@ -351,3 +398,53 @@ nvguard 只守护 `/Library` 下的驱动文件；**OpenCore ESP 上的修复**�
 - ESP 已被别人挂载时不会卸载它（只读检查，推迟修复）；不碰 `OpenCore.efi`、引导器和启动项。
 - 有意改过 EFI（`apply-*.sh`）之后要重跑 `install.sh` 刷新快照。日志 `/var/log/efiguard.log`，`nvguard/verify.sh` 里有对应的检查项。
 - 测试方式：设 `EFIGUARD_ROOT`（一个含 `EFI/OC` 的目录）和 `EFIGUARD_SNAP`、`EFIGUARD_TEST=1` 就能在 ESP 的副本上演练，不碰系统。
+- **按分区 UUID 找 ESP**（`ESP_UUID`）：macOS 26 上盘号每次开机可能不同（`disk1s4` / `disk0s4`），写死的盘号会让守护去查错盘或直接停下。
+- macOS 26：也守护 `-no_compat_check`、`revpatch=`（没有它们 26 开不了机 / 收不到更新）；救援配置生效时（`EFI/OC/rescue/ACTIVE`，第 32 项）完全不碰 ESP。
+
+## 十一、macOS 26（Tahoe）
+
+macOS 26 专用的脚本都在 [`tahoe/`](../tahoe/README.md)。作者本机：macOS 15.8.1 → **26.7.1**，SMBIOS 仍是 iMacPro1,1，驱动是 NullMoth 1.15.0 + 本仓库补丁。
+
+### 32. 升级到 macOS 26（保留 iMacPro1,1、驱动停放、首次启动收尾、救援）
+- **机型**：26 不再支持 iMacPro1,1。上游的安装器给新装的机器用 MacPro7,1（15 和 26 都能装），但**不要**在已经装好的 15.8.1 上直接改成 MacPro7,1（有报告称会启动循环）。保留 iMacPro1,1，
+  加 RestrictEvents 1.1.6 + boot-arg `-no_compat_check`（让 26 在不支持的机型上启动）+ `revpatch=sbvmm`（让“软件更新”给这台机器推送 26）。这两个 boot-arg 之后**一直需要**。
+- **第一步，在 15 上**（`tahoe/prep-efi-26.sh`，只做 15 和 26 都能用的 EFI 改动）：RestrictEvents、两个 boot-arg、AirportItlwm 的 Tahoe 条目（第 18 项）、
+  NVDSM / BTLEFix 的 Lilu 最高内核版本放到 Tahoe。改完先重启回 15，检查 Wi-Fi、蓝牙、亮度、声音。撤销：`revert-efi-26.sh <备份>`。
+- **第二步，开始升级之前**（`tahoe/update-26.sh prepare`；思路与上游 1.15.0 的 `nullmoth-setup.sh --update prepare|finish` 相同，但针对打过补丁的驱动和我们的 EFI）：
+  驱动“停放”（`-nvoff`，画面走固件帧缓冲），换成安装器需要的屏幕设置（`ResizeGpuBars -1`、`ResizeAppleGpuBars 0`、关掉对 IONDRVSupport 的屏蔽），并装一个 LaunchDaemon。
+  升级后第一次进 26，它自动执行 `finish`：NVAccel 换成 1.15.0 安装包里的 macOS 26 版（`/Library/NullMoth/kexts/26`），重建辅助内核集合（四个 NullMoth kext 必须都在），
+  EFI 设置改回原样，重启一次。任何一步失败都保持停放状态并写日志（`/Library/NullMoth/tahoe/update.log`）。不升级了：`update-26.sh cancel`。
+- 升级需要约 30–40 GB 空闲空间。
+- **救援**（`tahoe/install-rescue.sh`，用法见 [`tahoe/RESCUE.md`](../tahoe/RESCUE.md)）：在 ESP 上放 `EFI/OC/rescue/`。`rescue.sh safe|restore|status` 只用 `sh`/`cp`/`cmp`，
+  在 macOS 恢复模式的终端里就能跑；`config-safe.plist` = 当前配置 + 驱动停放 + 安装器屏幕设置 + 关掉我们自己/新加的 4 个 kext（AirportItlwm-Tahoe、BTLEFix、NVDSM、RestrictEvents）。
+  生效期间 efiguard 和 `finish` 都不碰 ESP。有意改过 `config.plist` 后重跑 `install-rescue.sh`，让 `config-safe.plist` 跟上。
+  **别用升级前的 EFI 备份救 26**：它没有 `-no_compat_check`，26 开不了机。
+- **恢复模式入口**（`tahoe/add-ocrec.sh`，适用于用 Limine 引导 OpenCore 的布局）：把 `EFI/OC` 复制成 `EFI/OCREC`（同样的 kext / ACPI / boot-args，26 仍能启动），
+  把副本的 `config.plist` 设成立即显示 OpenCore 选单（`ShowPicker`、`Timeout 0`、`HideAuxiliary false`），并在 Limine 菜单里加一项 “macOS Recovery”。`EFI/OC` 本身不变；`add-ocrec.sh undo` 撤销。
+- **盘号会变**：26 上 ESP 有时是 `disk1s4`、有时是 `disk0s4`。`tahoe/`、`efiguard/`、1.15.0 内核扩展脚本都按分区 UUID（`ESP_UUID`）找 ESP；
+  仓库里其余还要 `ESP_DEV` 的脚本，每次运行前请先 `diskutil list` 确认。
+- 升级后检查：Wi-Fi、蓝牙、亮度、声音（第 33 项）、电源（第 34 项）、HiDPI@165Hz。**不要测系统睡眠**（不受支持，见 docs/pitfalls.md）。
+
+### 33. macOS 26 没有内置声卡（AppleHDA 被移除）
+- 现象：升级到 26 后内置扬声器 / 麦克风消失。AppleALC 照常加载，但它是给 AppleHDA 打补丁的，而 **26 把 AppleHDA.kext 从系统里删了**。
+- 修复（`tahoe/audio/install-hda26.sh`）：把 **macOS 15.7.9 KDK**（dortania KdkSupportPkg `24G830`）里的 AppleHDA 放进 `/Library/Apple/System/Library/Extensions`，
+  重建辅助内核集合。**不碰密封的系统卷**，macOS 更新后 kext 还在（只是重新链接）。逐个踩过的坑：
+  1. Tahoe beta 1 KDK 里的 AppleHDA：编解码器挂上了，`AppleHDADriver` 却永远不启动。换成 15.7.9 的（AppleALC 1.9.8 也是按它验证的）。
+  2. `kmutil` 默认不把第三方目录里 Apple 前缀的 kext 放进辅助集合，要用 `-b` 逐个点名（AppleHDA、AppleHDAController、AppleHDAHardwareConfigDriver、DspFuncLib、IOHDAFamily）。
+  3. 放在 `/Library/Extensions` 时，`kernelmanagerd` 拒绝为它建资源查找表（`Cannot insert Kext com.apple.driver.AppleHDA … into a restricted lookup table`），
+     所以放进 Apple 的仓库目录 `/Library/Apple/System/Library/Extensions`。
+  4. `AppleHDADriver::startAction` 用 `OSKextRequestResource` 要 `layoutN.xml.zlib` / `Platforms.xml.zlib`，然后在信号量上**永远等不到回调**（`kernelmanagerd` 不应答）。
+     BTLEFix 1.0.6 路由 `OSKext::requestResource`：对 AppleHDA 的这两类文件，直接从 kext 包里读出来调用回调（AppleALC 再把它换成自己的 layout / 平台数据）；文件名有白名单和路径检查。
+- 验证：`kextstat | grep -i hda`；`system_profiler SPAudioDataType` 出现内置输入 / 输出；`sysctl debug.btlefix_log` 里有 `AppleHDA resource layoutN.xml.zlib: served from the bundle`。
+- 已知问题：设备名显示成原始键（如 `DevShortNameOut…`）——CoreAudio 按裸名 `AppleHDA.kext` 找本地化资源，找不到。要把 AppleHDA 放进密封系统卷才能解决，风险大，未做。
+- macOS 更新后确认一次（脚本可重复运行，`undo` 撤销）。诊断：`tahoe/audio/diag-hda-stuck.sh`（内核消息 + 内核栈 + ioreg）。KDK 需要自己下载解开，路径见脚本开头。
+
+### 34. macOS 26 插着电源却显示“电池供电”，FileVault 转换一直“已暂停”
+- 现象：26 上 `pmset -g ps` 显示 `Battery Power`、`ExternalConnected = No`，而充电器插着（EC 的 ADP 位为 1）；FileVault 加密 / 解密一直 `0% (Paused)`，
+  `fdesetup` / `diskutil apfs decryptVolume` 报 -69573（恢复模式里也一样）——**APFS 在电池供电时暂停加密转换**。
+- 根因：SMCBatteryManager 对 ACPI0003 的 `AC` 设备求值 `_PSR` 失败。这台机器 DSDT 里的 `\_SB.AC._PSR` 是给 Windows 写的（调用 WMI / DCHU 的方法），在 macOS 下求值出错（`kIOReturnError`）。
+  用一个只读诊断 kext（`tahoe/power/ACProbe`，把求值结果挂到 IORegistry：`ioreg -rn AC -l | grep probe_`）在内核里逐个确认。
+- 修复（`tahoe/power/install-acpsr.sh`）：`SSDT-ACPSR.aml` 提供自己的 `_PSR`（返回由 EC 查询 `_Q16` 维护的 `ACFG`），再加一条 ACPI 补丁把原方法改名为 `XPSR`
+  （`_PSR\0 → XPSR\0`，整张 DSDT、Count 1；用 `\_SB.AC` 限定 Base 匹配不上）。重启后 `AC Power`、`ExternalConnected = Yes`，FileVault 转换继续。撤销：`install-acpsr.sh undo`。
+- `_PSR` 依赖 Windows 专用方法的 DSDT 在蓝天模具上常见，但 EC 字段和 `ACFG` 的名字因机型而异，先用 `tahoe/power/show-acpi.sh`、`ACProbe` 核对你的机器。诊断 kext 用完就撤（`install-acprobe.sh undo`）。
+- 绝对 ACPI 路径在内核里求值时，每段名字要补足 4 个字符（`\_SB_.AC__`）；求值不存在的名字返回的也是 `0xE00002BC`，和“方法出错”分不开，要配合一个确定存在的哨兵名字判断。
