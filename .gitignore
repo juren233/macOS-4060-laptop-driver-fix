@@ -1,0 +1,8 @@
+# kexts and downloads you supply yourself for tahoe/ (third-party / Apple binaries are never committed)
+tahoe/payload/
+tahoe/backup/
+tahoe/audio/dl/
+tahoe/audio/backup/
+tahoe/power/backup/
+tahoe/power/ACProbe/build/
+.DS_Store

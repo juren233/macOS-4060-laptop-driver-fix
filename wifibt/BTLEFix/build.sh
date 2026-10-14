@@ -4,7 +4,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 LILU=${LILU:-$HERE/../../backlight/deps/Lilu-1.7.2}; MKSDK=${MKSDK:-$HERE/../../backlight/deps/MacKernelSDK}
 OUT="$HERE/build"; K="$OUT/BTLEFix.kext"; rm -rf "$OUT"; mkdir -p "$K/Contents/MacOS"
-DEFS=(-DPRODUCT_NAME=BTLEFix -DMODULE_VERSION=1.0.5 -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT -DLILU_KEXTPATCH_SUPPORT)
+DEFS=(-DPRODUCT_NAME=BTLEFix -DMODULE_VERSION=1.0.6 -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT -DLILU_KEXTPATCH_SUPPORT)
 INC=(-nostdinc -I"$MKSDK/Headers" -I"$LILU/Lilu")
 CXX=(-arch x86_64 -fapple-kext -mkernel -std=c++17 -fno-rtti -fno-exceptions -fno-builtin -fno-common -fno-stack-protector -mno-red-zone -O2
      -Wall -Wno-unused-parameter -Wno-inconsistent-missing-override -Wno-deprecated-declarations)

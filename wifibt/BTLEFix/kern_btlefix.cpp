@@ -1,22 +1,28 @@
-// BTLEFix: Intel AX211 Bluetooth on macOS 15 in bluetoothd's external-dongle mode.
+// BTLEFix: Intel AX211 Bluetooth on macOS 15 / 26 in bluetoothd's external-dongle mode (+ the macOS 26 AppleHDA resource shim, 5.).
 //
 // 1. bluetoothd sends LE Read Buffer Size [v2] (0x2060) whenever LE feature byte 3 is >= 0x10 (ISO host support and
 //    up), without checking Supported Commands octet 41 bit 5. Intel AX211 firmware sets those LE feature bits but does
 //    not implement v2 (octet 41 = 0xC8), the command fails and bluetoothd aborts HCI init ("Third Party USB Bluetooth
 //    dongle failed initialization"). Linux checks the command bit; this patch makes bluetoothd take the v1 branch.
-//    Same mechanism as BlueToolFixup: patch the code page when it is validated (cs_validate_page).
+//    Same mechanism as BlueToolFixup: patch the code page when it is validated (cs_validate_page). macOS 26's bluetoothd has
+//    the same code with another first displacement (0x49 -> 0x69); both patterns are patched.
 // 2. Replaces IntelBTPatcher (disable it: both route IOUSBHostDevice::deviceRequest): before the first LE Set Scan
 //    Parameters (0x200B) or LE Set Extended Scan Parameters (0x2041) after a reset, send LE Set Random Address, which
 //    Intel firmware needs before scanning with a random own address.
+// 3. HCI trace: every HCI command sent through deviceRequest is logged to kprintf ("BTLEFix:") and to
+//    `sysctl debug.btlefix_log` (ring of the last lines). Events are NOT traced: wrapping IOUSBHostPipe::io completions
+//    and reading the buffer there panicked ("IOGMD: not wired for the IODMACommand") - the descriptor is no longer
+//    prepared when the completion runs.
 // 4. Connecting a headset took several clicks: bluetoothd sends Inquiry Cancel (0x0402) and Create Connection (0x0405)
 //    back to back while its inquiry runs; Intel firmware has not left the inquiry yet and fails the page at once with
 //    Command Disallowed (bluetoothd STATUS 712 = 700 + HCI 0x0C). So: send Inquiry Cancel first if an inquiry may still
 //    be active, and hold a Create Connection until debug.btlefix_page_delay_ms (default 100, writable without root)
 //    have passed since the last Inquiry Cancel.
-// 3. HCI trace: every HCI command sent through deviceRequest is logged to kprintf ("BTLEFix:") and to
-//    `sysctl debug.btlefix_log` (ring of the last lines). Events are NOT traced: wrapping IOUSBHostPipe::io completions
-//    and reading the buffer there panicked ("IOGMD: not wired for the IODMACommand") - the descriptor is no longer
-//    prepared when the completion runs.
+// 5. macOS 26 built-in audio (AppleHDA out of the OS image, loaded from the auxiliary kernel collection): AppleHDADriver::startAction
+//    calls OSKextRequestResource("com.apple.driver.AppleHDA", "layoutN.xml.zlib" / "Platforms.xml.zlib") and waits on a semaphore
+//    for the callback. kernelmanagerd refuses ("Cannot insert Kext com.apple.driver.AppleHDA ... into a restricted lookup table")
+//    and never answers, so the driver hangs for ever and there is no built-in audio. Answer the request ourselves: read the file
+//    from the kext bundle and call the callback (AppleALC routes that callback and substitutes its own layout/platform data).
 #include <Headers/plugin_start.hpp>
 #include <Headers/kern_api.hpp>
 #include <Headers/kern_util.hpp>
@@ -26,6 +32,8 @@
 #include <IOKit/usb/IOUSBHostFamily.h>
 #include <IOKit/usb/IOUSBHostIOSource.h>
 #include <IOKit/usb/StandardUSB.h>
+#include <libkern/OSKextLib.h>
+#include <Headers/kern_file.hpp>
 #include <sys/vnode.h>
 #include <sys/sysctl.h>
 #include <stdarg.h>
@@ -79,8 +87,11 @@ static void hex(char *out, size_t cap, const uint8_t *b, size_t n) {
 
 // ---- 1. bluetoothd page patch ----
 // cmpb $1, 0x49(%r14); jne +0x15; cmpb $0x10, 0x27(%r14); jae +0x1e   ->   ... ; nop nop
-static const uint8_t kFind[]  = { 0x41, 0x80, 0x7E, 0x49, 0x01, 0x75, 0x15, 0x41, 0x80, 0x7E, 0x27, 0x10, 0x73, 0x1E };
-static const uint8_t kRepl[]  = { 0x41, 0x80, 0x7E, 0x49, 0x01, 0x75, 0x15, 0x41, 0x80, 0x7E, 0x27, 0x10, 0x90, 0x90 };
+// macOS 26 bluetoothd is identical except the first displacement (0x49 -> 0x69).
+static const uint8_t kFind[]   = { 0x41, 0x80, 0x7E, 0x49, 0x01, 0x75, 0x15, 0x41, 0x80, 0x7E, 0x27, 0x10, 0x73, 0x1E };
+static const uint8_t kRepl[]   = { 0x41, 0x80, 0x7E, 0x49, 0x01, 0x75, 0x15, 0x41, 0x80, 0x7E, 0x27, 0x10, 0x90, 0x90 };
+static const uint8_t kFind26[] = { 0x41, 0x80, 0x7E, 0x69, 0x01, 0x75, 0x15, 0x41, 0x80, 0x7E, 0x27, 0x10, 0x73, 0x1E };
+static const uint8_t kRepl26[] = { 0x41, 0x80, 0x7E, 0x69, 0x01, 0x75, 0x15, 0x41, 0x80, 0x7E, 0x27, 0x10, 0x90, 0x90 };
 
 static mach_vm_address_t orgValidate {};
 static bool reported;
@@ -90,11 +101,49 @@ static void patchedValidatePage(vnode_t vp, memory_object_t pager, memory_object
 	FunctionCast(patchedValidatePage, orgValidate)(vp, pager, off, data, validated, tainted, nx);
 	char path[PATH_MAX]; int len = PATH_MAX;
 	if (vn_getpath(vp, path, &len) == 0 && UNLIKELY(strcmp(path, "/usr/sbin/bluetoothd") == 0)) {
-		if (KernelPatcher::findAndReplace(const_cast<void *>(data), PAGE_SIZE, kFind, sizeof kFind, kRepl, sizeof kRepl) && !reported) {
+		bool hit = KernelPatcher::findAndReplace(const_cast<void *>(data), PAGE_SIZE, kFind, sizeof kFind, kRepl, sizeof kRepl);
+		hit |= KernelPatcher::findAndReplace(const_cast<void *>(data), PAGE_SIZE, kFind26, sizeof kFind26, kRepl26, sizeof kRepl26);
+		if (hit && !reported) {
 			reported = true;
 			blog("bluetoothd: LE Read Buffer Size v2 branch disabled");
 		}
 	}
+}
+
+
+// ---- 5. AppleHDA resource requests ----
+static mach_vm_address_t orgRequestResource {};
+static const char *kHdaDirs[] {
+	"/Library/Apple/System/Library/Extensions/AppleHDA.kext/Contents/Resources/",
+	"/Library/Extensions/AppleHDA.kext/Contents/Resources/",
+};
+
+static bool hdaResourceNameOk(const char *n) {
+	if (!n || !n[0] || strlen(n) > 40) return false;
+	for (const char *c = n; *c; c++) {
+		if (*c == '/' || *c == '\\' || (*c == '.' && c[1] == '.')) return false;
+	}
+	return strncmp(n, "layout", 6) == 0 || strncmp(n, "Platforms", 9) == 0;
+}
+
+static OSReturn patchedRequestResource(const char *kextId, const char *name, OSKextRequestResourceCallback cb, void *ctx,
+                                       OSKextRequestTag *tagOut) {
+	if (kextId && cb && strcmp(kextId, "com.apple.driver.AppleHDA") == 0 && hdaResourceNameOk(name)) {
+		uint8_t *buf = nullptr;
+		size_t size = 0;
+		char path[256];
+		for (size_t i = 0; i < arrsize(kHdaDirs) && !buf; i++) {
+			snprintf(path, sizeof(path), "%s%s", kHdaDirs[i], name);
+			buf = FileIO::readFileToBuffer(path, size);
+		}
+		blog("AppleHDA resource %s: %s (%lu bytes)", name, buf ? "served from the bundle" : "not found", (unsigned long)size);
+		if (tagOut) *tagOut = kOSKextRequestTagInvalid;
+		if (buf) cb(kOSKextRequestTagInvalid, kOSReturnSuccess, buf, (uint32_t)size, ctx);
+		else cb(kOSKextRequestTagInvalid, kOSKextReturnNotFound, nullptr, 0, ctx);
+		if (buf) Buffer::deleter(buf);
+		return kOSReturnSuccess;
+	}
+	return FunctionCast(patchedRequestResource, orgRequestResource)(kextId, name, cb, ctx, tagOut);
 }
 
 // ---- 2./3. HCI commands (deviceRequest) ----
@@ -217,6 +266,12 @@ static void pluginStart() {
 		if (!patcher.routeMultipleLong(KernelPatcher::KernelID, &r, 1))
 			blog("failed to route cs_validate_page");
 		patcher.clearError();
+		KernelPatcher::RouteRequest rr("__ZN6OSKext15requestResourceEPKcS1_PFvjiPKvjPvES4_Pj", patchedRequestResource, orgRequestResource);
+		if (!patcher.routeMultipleLong(KernelPatcher::KernelID, &rr, 1))
+			blog("failed to route OSKext::requestResource");
+		else
+			blog("routed OSKext::requestResource");
+		patcher.clearError();
 	});
 	lilu.onKextLoadForce(&kextUsb, 1, [](void *, KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size) {
 		if (index != kextUsb.loadIndex) return;
@@ -240,6 +295,6 @@ PluginConfiguration ADDPR(config) {
 	bootargDebug, arrsize(bootargDebug),
 	bootargBeta, arrsize(bootargBeta),
 	KernelVersion::Sequoia,
-	KernelVersion::Sequoia,
+	KernelVersion::Tahoe,   // macOS 26 (in use on 26.7.1)
 	pluginStart
 };

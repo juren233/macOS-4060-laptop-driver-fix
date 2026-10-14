@@ -854,7 +854,12 @@ static void pluginStart() {
 			patcher.clearError();
 			dlog("NVKMS backlight symbols: get %s set %s gKmsLock %s", gKmsGetBl ? "ok" : "MISSING",
 			     gKmsSetBl ? "ok" : "MISSING", gKmsLockPtr ? "ok" : "MISSING");
-			if (gKmsGetBl && gKmsSetBl && gKmsLockPtr) {
+			// NullMoth 1.15.0 keeps the registration itself (nvkms_xnu_backlight, NVRMFB "NVRMBacklight" handler, same design
+			// as this v8 code). Routing over it would leave upstream NVRMFB without a backlight, so only the _DSM/_DOD above stay ours.
+			const bool upstreamBl = patcher.solveSymbol(index, "_nvkms_xnu_backlight", address, size) != 0;
+			patcher.clearError();
+			if (upstreamBl) dlog("NVRM keeps the NVKMS backlight itself (nvkms_xnu_backlight): not routing nvkms_(un)register_backlight");
+			if (gKmsGetBl && gKmsSetBl && gKmsLockPtr && !upstreamBl) {
 				KernelPatcher::RouteRequest bl[] {
 					{"_nvkms_register_backlight", wrapRegisterBl},
 					{"_nvkms_unregister_backlight", wrapUnregisterBl},
@@ -884,6 +889,6 @@ PluginConfiguration ADDPR(config) {
 	bootargDebug, arrsize(bootargDebug),
 	bootargBeta, arrsize(bootargBeta),
 	KernelVersion::Sequoia,
-	KernelVersion::Sequoia,
+	KernelVersion::Tahoe,   // macOS 26 (in use on 26.7.1)
 	pluginStart
 };

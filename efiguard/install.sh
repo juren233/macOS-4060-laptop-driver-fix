@@ -1,13 +1,14 @@
 #!/bin/zsh
 # Install / refresh the ESP guard (efiguard.sh) and its snapshot.
-#   sudo -E ESP_DEV=disk1s4 ESP_UUID=$(diskutil info disk1s4 | awk -F': *' '/Partition UUID/{print $2}') zsh install.sh
+#   sudo -E ESP_UUID=$(diskutil info disk1s4 | awk -F': *' '/Partition UUID/{print $2}') zsh install.sh   (disk1s4 = your ESP today)
 # Re-run after every DELIBERATE EFI change (apply-alc.sh, apply-kexts.sh, ...): the snapshot is what gets restored.
 # Remove: sudo zsh install.sh remove.   Test without touching the system: EFIGUARD_ROOT=<dir with EFI/OC> EFIGUARD_SNAP=<dir> EFIGUARD_TEST=1 zsh install.sh
 HERE=${0:A:h}
 G=${EFIGUARD_SNAP:-/Library/NullMoth/efiguard}
 PL=/Library/LaunchDaemons/local.efiguard.plist
-DEV=${ESP_DEV:?set ESP_DEV to your OpenCore ESP, e.g. disk1s4 (see: diskutil list)}
-UUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of that ESP (diskutil info $ESP_DEV)}
+UUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}
+# disk numbers move between boots (seen on macOS 26: disk1s4 one boot, disk0s4 the next): the ESP is found by its partition UUID
+DEV=${ESP_DEV:-}; [[ -n $EFIGUARD_ROOT ]] || for d in $(diskutil list 2>/dev/null | awk '/ EFI /{print $NF}'); do [[ "$(diskutil info $d 2>/dev/null | awk -F': *' '/Partition UUID/{print $2}')" == $UUID ]] && { DEV=$d; break; }; done
 PB=/usr/libexec/PlistBuddy
 if [[ $1 == remove ]]; then launchctl bootout system $PL 2>/dev/null || true; rm -f $PL; chflags -R noschg $G 2>/dev/null; rm -rf $G; echo "efiguard removed (snapshots of replaced files stay in /Library/NullMoth/efiguard-replaced)"; exit 0; fi
 [[ -n $EFIGUARD_TEST || $(id -u) -eq 0 ]] || { echo "STOP: run with sudo"; exit 1; }
@@ -41,12 +42,12 @@ i=0; while b=$($PB -c "Print :Kernel:Add:$i:BundlePath" $C 2>/dev/null); do
   [[ $($PB -c "Print :Kernel:Add:$i:Enabled" $C) == true ]] && print -r -- $b; i=$((i+1)); done > $G/required-kexts.txt
 # required boot-args: the ones that carry our fixes (only those present right now); a trailing = means "any value"
 cur=$($PB -c "Print :NVRAM:Add:7C436110-AB2A-4BBB-A880-FE41995C9F82:boot-args" $C)
-for tok in nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth ipc_control_port_options=0 itlwm_he=1 -btlfxboardid amfi=0x80 amfi_get_out_of_my_way=0x1 alcid=; do
+for tok in nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth ipc_control_port_options=0 itlwm_he=1 -btlfxboardid amfi=0x80 amfi_get_out_of_my_way=0x1 alcid= -no_compat_check revpatch=; do
   if [[ $tok == *= && $tok != *=?* ]]; then [[ " $cur " == *" $tok"* ]] && print -r -- $tok
   else [[ " $cur " == *" $tok "* ]] && print -r -- $tok; fi
 done > $G/required-bootargs.txt
 cp $HERE/efiguard.sh $G/efiguard.sh
-printf 'DEV=%s\nUUID=%s\n' $DEV $UUID > $G/esp.conf   # the daemon reads the ESP identity from here
+printf 'DEV=%s\nUUID=%s\n' $DEV $UUID > $G/esp.conf   # the daemon reads the ESP identity from here (DEV is only a hint)
 echo "snapshot: $(wc -l < $G/manifest.txt | tr -d ' ') files, $(wc -l < $G/required-kexts.txt | tr -d ' ') required kexts, boot-args: $(tr '\n' ' ' < $G/required-bootargs.txt)"
 [[ -n $EFIGUARD_TEST ]] && { echo "(test mode: no daemon)"; exit 0; }
 mkdir -p /Library/NullMoth/efiguard-replaced
