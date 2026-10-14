@@ -1,0 +1,61 @@
+diff --git a/kexts/NVRMFB/fb/nvrm-fb.cpp b/kexts/NVRMFB/fb/nvrm-fb.cpp
+index ea30a2f..185beef 100644
+--- a/kexts/NVRMFB/fb/nvrm-fb.cpp
++++ b/kexts/NVRMFB/fb/nvrm-fb.cpp
+@@ -2408,6 +2408,30 @@ SYSCTL_INT(_debug, OID_AUTO, nvrmfb_flip_interval, CTLFLAG_RW | CTLFLAG_LOCKED,
+ SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_flip_us_sum, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gFlipUsSum, "microseconds spent in pure-flip applyModeSetConfig");
+ SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_flip_n, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gFlipN, "pure flips timed");
+ SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_flip_us_max, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gFlipUsMax, "the slowest pure flip, us");
++// LOCAL: RM scrubs video memory when it is freed (PMA scrub-on-free, a copy-engine job), so a fresh grant already reads zero
++// and the CPU clear below only repeats it over BAR1 (measured 2026-10-13 on 1.9.0: 0 nonzero in ~21k grants, ~10% of a core
++// under Bilibili danmaku). vramGrant reads one qword per 64 KB (one per 4 KB on every 256th grant) and clears only when one
++// is nonzero. debug.nvrmfb_clear_mode: 2 (default) = skip the clear when every sampled qword is zero, 0 = always clear (upstream).
++static int gClearMode = 2;
++static volatile SInt64 gScrubChecked, gScrubDirty, gClearSkipped, gClearSkippedBytes, gClearNs, gClearBytes;
++SYSCTL_INT(_debug, OID_AUTO, nvrmfb_clear_mode, CTLFLAG_RW | CTLFLAG_LOCKED, &gClearMode, 0, "0 always clear, 2 skip when sampled zero");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_checked, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubChecked, "grants sampled before the clear");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scrub_dirty, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScrubDirty, "grants with a nonzero sampled qword");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_clear_skipped, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gClearSkipped, "grants not cleared (mode 2)");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_clear_skipped_bytes, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gClearSkippedBytes, "bytes not cleared (mode 2)");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_clear_ns, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gClearNs, "ns spent in the CPU clear");
++SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_clear_bytes, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gClearBytes, "bytes cleared by the CPU");
++// Reads the sampled qwords of a fresh grant; true if one was nonzero.
++static bool nvrmScrubDirty(void *kva, NvU64 n)
++{
++    const SInt64 seq = OSAddAtomic64(1, &gScrubChecked);
++    const NvU64 step = (seq & 255) == 0 ? 4096 : 65536, start = ((NvU64)seq * 0x9E38ull) & (step - 8);
++    volatile const NvU64 *q = (volatile const NvU64 *)kva;
++    bool dirty = q[(n >> 3) - 1] != 0;
++    for (NvU64 off = start; !dirty && off + 8 <= n; off += step) dirty = q[off >> 3] != 0;
++    if (dirty) OSAddAtomic64(1, &gScrubDirty);
++    return dirty;
++}
+ static bool gFbSysctl = false;
+ static void nvrmfbInstallSysctl(void)
+ {
+@@ -2421,6 +2445,10 @@ static void nvrmfbInstallSysctl(void)
+     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_lean);
+     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch); sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch_waits);
+     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch_timeouts); sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch_max_us);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_clear_mode); sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_checked);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_scrub_dirty); sysctl_register_oid(&sysctl__debug_nvrmfb_clear_skipped);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_clear_skipped_bytes); sysctl_register_oid(&sysctl__debug_nvrmfb_clear_ns);
++    sysctl_register_oid(&sysctl__debug_nvrmfb_clear_bytes);
+ }
+ 
+ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
+@@ -2491,7 +2519,13 @@ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
+     }
+     if (!mem) { OSAddAtomic64(-(SInt64)want, &gVramMappedBytes); return false; }
+ 
+-    nvu_zero_wide(kva, (size_t)want);
++    if (gClearMode == 2 && !nvrmScrubDirty(kva, want)) {
++        OSAddAtomic64(1, &gClearSkipped); OSAddAtomic64((SInt64)want, &gClearSkippedBytes);
++    } else {
++        const uint64_t c0 = mach_absolute_time();
++        nvu_zero_wide(kva, (size_t)want);
++        OSAddAtomic64((SInt64)(mach_absolute_time() - c0), &gClearNs); OSAddAtomic64((SInt64)want, &gClearBytes);
++    }
+     volatile NvU64 *q = (volatile NvU64 *)kva;
+     q[0] = 0x5A5AA5A5C0FFEE01ull;
+     NvU64 back = q[0];

@@ -1,0 +1,831 @@
+diff --git a/translator/translator/src/native/tests/buffers.rs b/translator/translator/src/native/tests/buffers.rs
+index 139d289..17723f3 100644
+--- a/translator/translator/src/native/tests/buffers.rs
++++ b/translator/translator/src/native/tests/buffers.rs
+@@ -13677,32 +13677,13 @@ exit:
+     let spv = crate::translate_sanitized_native(ll, Stage::Kernel, &tmp).expect("translate");
+     let asm = disassemble(&spv).expect("disassemble");
+ 
+-    // The address phi is the loop header's: a selection-merge phi elsewhere (the null-checked load helper's)
+-    // also has two 64-bit incoming values, and picking among `defs.values()` made this test depend on hash order.
+     let mut defs: HashMap<String, (String, String, Vec<String>)> = HashMap::new();
+     let mut type_decl: HashMap<String, String> = HashMap::new();
+-    let mut returns: HashMap<String, Vec<String>> = HashMap::new();
+-    let mut header_phis: Vec<String> = Vec::new();
+-    let (mut function, mut block_phis) = (String::new(), Vec::new());
+     for line in asm.lines() {
+         let words: Vec<&str> = line.split_whitespace().collect();
+-        match words.as_slice() {
+-            ["OpLoopMerge", ..] => header_phis.append(&mut block_phis),
+-            ["OpReturnValue", value] => returns
+-                .entry(function.clone())
+-                .or_default()
+-                .push(value.to_string()),
+-            _ => {}
+-        }
+         let [result, "=", opcode, rest @ ..] = words.as_slice() else {
+             continue;
+         };
+-        match *opcode {
+-            "OpFunction" => function = result.to_string(),
+-            "OpLabel" => block_phis.clear(),
+-            "OpPhi" => block_phis.push(result.to_string()),
+-            _ => {}
+-        }
+         if opcode.starts_with("OpType") {
+             type_decl.insert(result.to_string(), format!("{opcode} {}", rest.join(" ")));
+             continue;
+@@ -13726,23 +13707,14 @@ exit:
+         .map(|(id, _)| id.clone())
+         .expect("a 64-bit integer type");
+ 
+-    let address_phis: Vec<&String> = header_phis
+-        .iter()
+-        .filter(|id| {
+-            defs.get(*id).is_some_and(|(opcode, ty, operands)| {
+-                opcode == "OpPhi" && *ty == address_type && operands.len() == 4
+-            })
++    let backedge = defs
++        .values()
++        .find(|(opcode, ty, operands)| {
++            opcode == "OpPhi" && *ty == address_type && operands.len() == 4
+         })
+-        .collect();
+-    assert_eq!(
+-        address_phis.len(),
+-        1,
+-        "one 64-bit loop-carried address phi: {address_phis:?}"
+-    );
+-    let address_phi = address_phis[0].clone();
+-    let backedge = defs[&address_phi].2[2].clone();
++        .map(|(_, _, operands)| operands[2].clone())
++        .expect("a 64-bit loop-carried address phi");
+ 
+-    // Follow the backedge value down to the load, into the helpers it calls.
+     let mut pending = vec![backedge];
+     let mut seen: HashSet<String> = HashSet::new();
+     let mut loaded_address = false;
+@@ -13767,13 +13739,7 @@ exit:
+             loaded_address = true;
+             continue;
+         }
+-        if id == address_phi {
+-            continue;
+-        }
+-        if opcode == "OpFunctionCall" {
+-            let (callee, arguments) = operands.split_first().expect("a callee");
+-            pending.extend(returns.get(callee).into_iter().flatten().cloned());
+-            pending.extend(arguments.iter().cloned());
++        if opcode == "OpPhi" {
+             continue;
+         }
+         pending.extend(operands.iter().cloned());
+diff --git a/translator/translator/src/native/tests/textures.rs b/translator/translator/src/native/tests/textures.rs
+index da75108..0d7a71c 100644
+--- a/translator/translator/src/native/tests/textures.rs
++++ b/translator/translator/src/native/tests/textures.rs
+@@ -3198,9 +3198,11 @@ declare i32 @air.get_num_samples.i32(i32)
+         std::process::id()
+     ));
+     let _ = std::fs::create_dir_all(&tmp);
+-    let error = crate::translate_sanitized_native(ll, Stage::Fragment, &tmp)
+-        .expect_err("unknown pipeline state must remain unsupported");
+-    assert!(error.contains("raster_sample_count"), "{error}");
++    let spv = crate::translate_sanitized_native(ll, Stage::Fragment, &tmp)
++        .expect("unknown pipeline state becomes a specialization constant");
++    let asm = disassemble(&spv).expect("disassemble");
++    assert!(!asm.contains("air.get_num_samples.i32"), "{asm}");
++    assert!(asm.contains("OpSpecConstant") && asm.contains(&format!("SpecId {}", crate::reflect::RASTER_SAMPLE_COUNT_SPEC_ID)), "{asm}");
+ 
+     let options = crate::passes::TransformOptions {
+         raster_sample_count: Some(4),
+diff --git a/translator/translator/src/passes/air_calls/dispatch_texture.rs b/translator/translator/src/passes/air_calls/dispatch_texture.rs
+index 744aa7a..77c0890 100644
+--- a/translator/translator/src/passes/air_calls/dispatch_texture.rs
++++ b/translator/translator/src/passes/air_calls/dispatch_texture.rs
+@@ -1480,17 +1480,17 @@ pub(in crate::passes) fn lower_raster_sample_count(
+     if ctx.stage != Stage::Fragment {
+         return Err(format!("{name} requires fragment stage"));
+     }
+-    let samples = ctx.raster_sample_count.ok_or_else(|| {
+-        format!(
+-            "{name} requires TransformOptions::raster_sample_count to match the graphics pipeline"
+-        )
+-    })?;
++    let uint = ctx.ty_uint();
++    let Some(samples) = ctx.raster_sample_count else {
++        // Unknown at translation time: the pipeline specializes it (RASTER_SAMPLE_COUNT_SPEC_ID).
++        let value = ctx.raster_sample_count_spec_id();
++        return Ok(vec![copy_or_bitcast_result(rty, res, uint, value)]);
++    };
+     if !matches!(samples, 1 | 2 | 4 | 8 | 16 | 32 | 64) {
+         return Err(format!(
+             "{name} raster sample count {samples} is not a Vulkan sample-count value"
+         ));
+     }
+-    let uint = ctx.ty_uint();
+     let value = ctx.const_uint(samples);
+     Ok(vec![copy_or_bitcast_result(rty, res, uint, value)])
+ }
+diff --git a/translator/translator/src/passes/mod.rs b/translator/translator/src/passes/mod.rs
+index e64cf05..44ad194 100644
+--- a/translator/translator/src/passes/mod.rs
++++ b/translator/translator/src/passes/mod.rs
+@@ -299,6 +299,8 @@ struct Ctx {
+     image_multisampled: HashSet<Word>,
+     image_storage: HashSet<Word>,
+     image_array_vars: HashMap<Word, (Word, (Dim, bool), ImageComp, bool)>,
++    sampler_array_vars: HashSet<Word>,
++    array_element_ptrs: HashMap<Word, (Word, Word)>,
+     bindless_heap_vars: HashMap<Word, Word>,
+     address_table: Option<(Word, Word, Option<Word>)>,
+     bound_buffer_vars: HashSet<Word>,
+@@ -312,6 +314,7 @@ struct Ctx {
+     kernel_workgroup_size_id: Option<Word>,
+     kernel_dispatch: crate::reflect::KernelDispatch,
+     raster_sample_count: Option<u32>,
++    raster_sample_count_spec: Option<Word>,
+     vertex_amplification_count: u32,
+     runtime_sampler_states: [Option<RuntimeSamplerState>; SAMPLER_ARGUMENT_COUNT_USIZE],
+     runtime_storage_image_states: [Option<RuntimeStorageImageState>; TEXTURE_ARGUMENT_COUNT_USIZE],
+@@ -385,6 +388,8 @@ impl Ctx {
+             image_multisampled: HashSet::new(),
+             image_storage: HashSet::new(),
+             image_array_vars: HashMap::new(),
++            sampler_array_vars: HashSet::new(),
++            array_element_ptrs: HashMap::new(),
+             bindless_heap_vars: HashMap::new(),
+             address_table: None,
+             bound_buffer_vars: HashSet::new(),
+@@ -400,6 +405,7 @@ impl Ctx {
+                 .kernel_dispatch
+                 .unwrap_or_else(crate::reflect::KernelDispatch::safe_default),
+             raster_sample_count: options.raster_sample_count,
++            raster_sample_count_spec: None,
+             vertex_amplification_count: options.vertex_amplification_count,
+             runtime_sampler_states: options.runtime_sampler_states,
+             runtime_storage_image_states: options.runtime_storage_image_states,
+@@ -1289,6 +1295,34 @@ impl Ctx {
+         ids
+     }
+ 
++    /// The raster sample count as a specialization constant (default 1), for shaders translated before the
++    /// pipeline is known; see `crate::reflect::RASTER_SAMPLE_COUNT_SPEC_ID`.
++    pub(in crate::passes) fn raster_sample_count_spec_id(&mut self) -> Word {
++        if let Some(id) = self.raster_sample_count_spec {
++            return id;
++        }
++        let uint_ty = self.ty_uint();
++        let id = self.module.fresh_id();
++        self.new_globals.push(Instruction::new(
++            Op::SpecConstant,
++            Some(uint_ty),
++            Some(id),
++            vec![Operand::LiteralBit32(1)],
++        ));
++        self.module.annotations.push(Instruction::new(
++            Op::Decorate,
++            None,
++            None,
++            vec![
++                Operand::IdRef(id),
++                Operand::Decoration(Decoration::SpecId),
++                Operand::LiteralBit32(crate::reflect::RASTER_SAMPLE_COUNT_SPEC_ID),
++            ],
++        ));
++        self.raster_sample_count_spec = Some(id);
++        id
++    }
++
+     fn kernel_workgroup_size_id(&mut self) -> Word {
+         if let Some(id) = self.kernel_workgroup_size_id {
+             return id;
+diff --git a/translator/translator/src/passes/resources/collapse.rs b/translator/translator/src/passes/resources/collapse.rs
+index abeba18..3beaa61 100644
+--- a/translator/translator/src/passes/resources/collapse.rs
++++ b/translator/translator/src/passes/resources/collapse.rs
+@@ -795,6 +795,18 @@ pub(in crate::passes) fn apply_bindings(
+                 if let Some((metal_index, state)) = runtime_specialization {
+                     ctx.register_runtime_storage_image_value(var, metal_index, Some(state));
+                 }
++                record_array_element_pointers(ctx, entry_idx, pid, var);
++                remove_dead_local_image_array_memcpy(ctx, entry_idx, pid);
++                resource_values.insert(var);
++                splices.push((pid, var));
++            }
++            ParamBinding::SamplerArray { var, elem_ty } => {
++                // Samplers share the image-array machinery: the element is picked out of the
++                // descriptor array exactly like a texture handle, only its type differs.
++                ctx.image_array_vars
++                    .insert(var, (elem_ty, (Dim::Dim2D, false), ImageComp::Float, false));
++                ctx.sampler_array_vars.insert(var);
++                record_array_element_pointers(ctx, entry_idx, pid, var);
+                 remove_dead_local_image_array_memcpy(ctx, entry_idx, pid);
+                 resource_values.insert(var);
+                 splices.push((pid, var));
+@@ -1061,6 +1073,31 @@ pub(in crate::passes) fn apply_bindings(
+     Ok(())
+ }
+ 
++/// Remember which element of a descriptor array each `&param[k]` chain addresses, before the
++/// chains are retired as dead: the element pointers only reach their consumers through memory
++/// (ANGLE keeps `thread T *texture` in a local struct), where the sidecar facts name them by id.
++fn record_array_element_pointers(ctx: &mut Ctx, entry_idx: usize, param: Word, var: Word) {
++    let mut found = Vec::new();
++    for block in &ctx.module.functions[entry_idx].blocks {
++        for instruction in &block.instructions {
++            if !matches!(
++                instruction.class.opcode,
++                Op::AccessChain | Op::InBoundsAccessChain
++            ) {
++                continue;
++            }
++            if let (Some(result), [Operand::IdRef(base), Operand::IdRef(index)]) =
++                (instruction.result_id, instruction.operands.as_slice())
++            {
++                if *base == param {
++                    found.push((result, (var, *index)));
++                }
++            }
++        }
++    }
++    ctx.array_element_ptrs.extend(found);
++}
++
+ fn remove_dead_local_image_array_memcpy(ctx: &mut Ctx, entry_idx: usize, param: Word) {
+     let memcpy_ids = ctx
+         .module
+diff --git a/translator/translator/src/passes/resources/texture_array.rs b/translator/translator/src/passes/resources/texture_array.rs
+index 95a5ffa..8027372 100644
+--- a/translator/translator/src/passes/resources/texture_array.rs
++++ b/translator/translator/src/passes/resources/texture_array.rs
+@@ -59,6 +59,37 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             alias = *source;
+         }
+     }
++    // A handle reached through a pointer to an array element, e.g. ANGLE's `thread T *texture`
++    // in its texture-environment struct: the load of the element's value has the element pointer
++    // as its root and no further field.
++    let stored_arrays = stored_array_pointer_fields(ctx, entry_idx);
++    for fact in ctx.emit_sidecar.local_pointer_field_loads.clone() {
++        if fixed_handles.contains_key(&fact.id)
++            || ctx.image_array_vars.contains_key(&fact.root)
++            || !(fact.indices.is_empty() || fact.indices.as_slice() == [0])
++        {
++            continue;
++        }
++        if let Some(resolved) = resolve_array_element(ctx, &defs, fact.root) {
++            fixed_handles.insert(fact.id, resolved);
++            continue;
++        }
++        // The pointer to element 0 is the array parameter itself, which is stored into the
++        // struct as a plain pointer and so leaves no store fact behind: look it up by field key.
++        let outer = ctx
++            .emit_sidecar
++            .local_pointer_field_loads
++            .iter()
++            .find(|outer| outer.id == fact.root)
++            .map(|outer| (outer.root, trim_zero_indices(&outer.indices)));
++        if let Some((arrayvar, element)) = outer.and_then(|key| stored_arrays.get(&key).copied()) {
++            let element = match element {
++                Some(element) => element,
++                None => ctx.const_uint(0),
++            };
++            fixed_handles.insert(fact.id, (arrayvar, element));
++        }
++    }
+     let mut local_table_handles = HashMap::new();
+     for fact in &ctx.emit_sidecar.local_pointer_dynamic_field_loads {
+         let resolved = local_table_array_elements(ctx, &defs, fact, &fixed_handles);
+@@ -124,9 +155,35 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             if !is_texture_intrinsic(name) {
+                 continue;
+             }
+-            let Some(Operand::IdRef(handle)) = inst.operands.get(1) else {
++            // Operand 1 is the texture handle; operand 2 is the sampler handle of a sample/gather call.
++            for pos in [1usize, 2] {
++            let Some(Operand::IdRef(handle)) = inst.operands.get(pos) else {
+                 continue;
+             };
++            {
++                let mut probe = *handle;
++                for _ in 0..8 {
++                    let Some(source) = defs
++                        .get(&probe)
++                        .filter(|def| def.class.opcode == Op::CopyObject)
++                        .and_then(|def| match def.operands.first() {
++                            Some(Operand::IdRef(source)) => Some(*source),
++                            _ => None,
++                        })
++                    else {
++                        break;
++                    };
++                    probe = source;
++                    if let Some(resolved) = fixed_handles.get(&probe).copied() {
++                        fixed_handles.entry(*handle).or_insert(resolved);
++                        break;
++                    }
++                    if let Some(resolved) = dynamic_handles.get(&probe).copied() {
++                        dynamic_handles.entry(*handle).or_insert(resolved);
++                        break;
++                    }
++                }
++            }
+             if let Some(&slot) = device_texture_slots.get(handle) {
+                 device_candidates.push((*handle, slot, name.to_string()));
+                 seen.insert(*handle);
+@@ -161,6 +218,7 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+                 continue;
+             };
+             candidates.push((*handle, *ptr));
++            }
+         }
+     }
+     for (handle, ptr) in candidates {
+@@ -261,6 +319,7 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+         }
+         let &(elem_image_ty, dim, comp, multisampled) =
+             ctx.image_array_vars.get(&arrayvar).unwrap();
++        let is_sampler = ctx.sampler_array_vars.contains(&arrayvar);
+         let ptr_image = ctx.ty_ptr(StorageClass::UniformConstant, elem_image_ty);
+         let p = ctx.module.fresh_id();
+         new_access_chains.insert(
+@@ -273,12 +332,14 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             ),
+         );
+         retyped_load_ptr.insert(handle, (elem_image_ty, p));
+-        ctx.image_dims.insert(handle, dim);
+-        ctx.image_comp.insert(handle, comp);
+-        if multisampled {
+-            ctx.image_multisampled.insert(handle);
++        if !is_sampler {
++            ctx.image_dims.insert(handle, dim);
++            ctx.image_comp.insert(handle, comp);
++            if multisampled {
++                ctx.image_multisampled.insert(handle);
++            }
+         }
+-        if image_type_is_storage(ctx, elem_image_ty) {
++        if !is_sampler && image_type_is_storage(ctx, elem_image_ty) {
+             ctx.image_storage.insert(handle);
+             if let Some((metal_index, state)) =
+                 ctx.runtime_storage_image_values.get(&arrayvar).copied()
+@@ -296,7 +357,7 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+     }
+     dead_roots.extend(handle_order.iter().map(|handle| handles[handle].0));
+ 
+-    let mut placeholder_uses: HashMap<(usize, usize), (Instruction, Instruction, Word)> =
++    let mut placeholder_uses: HashMap<(usize, usize), Vec<(usize, Instruction, Instruction, Word)>> =
+         HashMap::new();
+     let mut placeholder_specs = Vec::new();
+     for (block_idx, block) in ctx.module.functions[entry_idx].blocks.iter().enumerate() {
+@@ -304,20 +365,23 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             if inst.class.opcode != Op::FunctionCall {
+                 continue;
+             }
+-            let Some(Operand::IdRef(handle)) = inst.operands.get(1) else {
+-                continue;
+-            };
+-            let Some(&(arrayvar, idx)) = handles.get(handle) else {
+-                continue;
+-            };
+-            if defs.contains_key(handle) {
+-                continue;
++            for pos in [1usize, 2] {
++                let Some(Operand::IdRef(handle)) = inst.operands.get(pos) else {
++                    continue;
++                };
++                let Some(&(arrayvar, idx)) = handles.get(handle) else {
++                    continue;
++                };
++                if defs.contains_key(handle) {
++                    continue;
++                }
++                placeholder_specs.push((block_idx, inst_idx, pos, arrayvar, idx));
+             }
+-            placeholder_specs.push((block_idx, inst_idx, arrayvar, idx));
+         }
+     }
+-    for (block_idx, inst_idx, arrayvar, idx) in placeholder_specs {
++    for (block_idx, inst_idx, pos, arrayvar, idx) in placeholder_specs {
+         let &(image_ty, dim, comp, multisampled) = ctx.image_array_vars.get(&arrayvar).unwrap();
++        let is_sampler = ctx.sampler_array_vars.contains(&arrayvar);
+         let ptr_image = ctx.ty_ptr(StorageClass::UniformConstant, image_ty);
+         let pointer = ctx.module.fresh_id();
+         let image = ctx.module.fresh_id();
+@@ -333,20 +397,25 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+             Some(image),
+             vec![Operand::IdRef(pointer)],
+         );
+-        ctx.image_dims.insert(image, dim);
+-        ctx.image_comp.insert(image, comp);
+-        if multisampled {
+-            ctx.image_multisampled.insert(image);
+-        }
+-        if image_type_is_storage(ctx, image_ty) {
+-            ctx.image_storage.insert(image);
+-            if let Some((metal_index, state)) =
+-                ctx.runtime_storage_image_values.get(&arrayvar).copied()
+-            {
+-                ctx.register_runtime_storage_image_value(image, metal_index, Some(state));
++        if !is_sampler {
++            ctx.image_dims.insert(image, dim);
++            ctx.image_comp.insert(image, comp);
++            if multisampled {
++                ctx.image_multisampled.insert(image);
++            }
++            if image_type_is_storage(ctx, image_ty) {
++                ctx.image_storage.insert(image);
++                if let Some((metal_index, state)) =
++                    ctx.runtime_storage_image_values.get(&arrayvar).copied()
++                {
++                    ctx.register_runtime_storage_image_value(image, metal_index, Some(state));
++                }
+             }
+         }
+-        placeholder_uses.insert((block_idx, inst_idx), (chain, load, image));
++        placeholder_uses
++            .entry((block_idx, inst_idx))
++            .or_default()
++            .push((pos, chain, load, image));
+     }
+ 
+     let func = &mut ctx.module.functions[entry_idx];
+@@ -354,11 +423,13 @@ pub(crate) fn materialize_texture_array_loads(ctx: &mut Ctx, entry_idx: usize) {
+         let mut rebuilt: Vec<Instruction> =
+             Vec::with_capacity(blk.instructions.len() + handles.len());
+         for (inst_idx, inst) in blk.instructions.clone().into_iter().enumerate() {
+-            if let Some((chain, load, image)) = placeholder_uses.remove(&(block_idx, inst_idx)) {
+-                rebuilt.push(chain);
+-                rebuilt.push(load);
++            if let Some(uses) = placeholder_uses.remove(&(block_idx, inst_idx)) {
+                 let mut call = inst;
+-                call.operands[1] = Operand::IdRef(image);
++                for (pos, chain, load, image) in uses {
++                    rebuilt.push(chain);
++                    rebuilt.push(load);
++                    call.operands[pos] = Operand::IdRef(image);
++                }
+                 rebuilt.push(call);
+                 continue;
+             }
+@@ -492,6 +563,55 @@ pub(crate) fn sink_loop_header_texture_array_loads(ctx: &mut Ctx, entry_idx: usi
+     }
+ }
+ 
++/// Trailing zero indices address the same bytes as their prefix, and the emitter folds such
++/// all-zero GEPs away, so the store of element 0 and the load of its first field differ only there.
++fn trim_zero_indices(indices: &[u32]) -> Vec<u32> {
++    let end = indices.iter().rposition(|&index| index != 0).map_or(0, |at| at + 1);
++    indices[..end].to_vec()
++}
++
++/// Local struct fields that hold a pointer into a descriptor array (the array itself, i.e. element 0,
++/// or `&array[k]`), keyed like the sidecar's pointer-field facts. The element is `None` for element 0.
++/// Those stores leave no sidecar fact when the stored pointer needs no placeholder, or when the
++/// store's address is the struct pointer itself rather than a GEP to its first field.
++fn stored_array_pointer_fields(
++    ctx: &Ctx,
++    entry_idx: usize,
++) -> HashMap<(Word, Vec<u32>), (Word, Option<Word>)> {
++    use crate::passes::access::local_pointer_field_access_key;
++    let mut access_keys = HashMap::new();
++    let mut stored = HashMap::new();
++    for block in &ctx.module.functions[entry_idx].blocks {
++        for inst in &block.instructions {
++            if let Some((result, key)) = local_pointer_field_access_key(ctx, &access_keys, inst) {
++                access_keys.insert(result, key);
++            }
++            if inst.class.opcode != Op::Store {
++                continue;
++            }
++            let (Some(Operand::IdRef(ptr)), Some(Operand::IdRef(value))) =
++                (inst.operands.first(), inst.operands.get(1))
++            else {
++                continue;
++            };
++            let Some(key) = access_keys.get(ptr) else {
++                continue;
++            };
++            let target = if ctx.image_array_vars.contains_key(value) {
++                Some((*value, None))
++            } else {
++                ctx.array_element_ptrs
++                    .get(value)
++                    .map(|&(arrayvar, element)| (arrayvar, Some(element)))
++            };
++            if let Some(target) = target {
++                stored.insert((key.root, trim_zero_indices(&key.indices)), target);
++            }
++        }
++    }
++    stored
++}
++
+ fn is_texture_intrinsic(name: &str) -> bool {
+     name.starts_with("air.sample_texture")
+         || name.starts_with("air.sample_depth")
+@@ -662,6 +782,9 @@ fn resolve_array_element(
+         let zero = ctx.const_uint(0);
+         return Some((ptr, zero));
+     }
++    if let Some(&resolved) = ctx.array_element_ptrs.get(&ptr) {
++        return Some(resolved);
++    }
+     let inst = defs.get(&ptr)?;
+     match inst.class.opcode {
+         Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain => {
+diff --git a/translator/translator/src/passes/stage_input/mod.rs b/translator/translator/src/passes/stage_input/mod.rs
+index 86a51da..8c43be0 100644
+--- a/translator/translator/src/passes/stage_input/mod.rs
++++ b/translator/translator/src/passes/stage_input/mod.rs
+@@ -220,6 +220,7 @@ pub(in crate::passes) enum ParamBinding {
+         var: Word,
+         specialized_state: Option<StaticSamplerState>,
+     },
++    SamplerArray { var: Word, elem_ty: Word },
+     Buffer { var: Word, wrap: BufWrap },
+     StageInput {
+         var: Word,
+@@ -265,11 +266,8 @@ fn declared_descriptor_counts(
+             ),
+         };
+         if is_sampler {
+-            return Err(format!(
+-                "entry parameter {idx} is an array of {count} samplers, which this translator has \
+-                 no descriptor-array lowering for; emitting the module would sample with a \
+-                 synthesized default sampler instead of the one the shader selected"
+-            ));
++            // A sampler array is lowered to a descriptor array (ParamBinding::SamplerArray).
++            continue;
+         }
+         let texture_type_name = match stage {
+             Stage::Fragment => frag.and_then(|m| m.texture_type_name(idx)),
+@@ -862,6 +860,34 @@ pub(super) fn build_stage_input(
+                     param_ty: *pty,
+                 },
+             ));
++        } else if role_is("sampler")
++            && match stage {
++                Stage::Fragment => frag.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Vertex => vert.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Kernel => kern.and_then(|m| m.declared_descriptor_count(idx)),
++            }
++            .is_some_and(|count| count > 1)
++        {
++            let count = match stage {
++                Stage::Fragment => frag.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Vertex => vert.and_then(|m| m.declared_descriptor_count(idx)),
++                Stage::Kernel => kern.and_then(|m| m.declared_descriptor_count(idx)),
++            }
++            .ok_or("sampler array has no declared descriptor count")?;
++            let elem_ty = ctx.ty_sampler();
++            let array_ty = ctx.ty_array(elem_ty, count);
++            let pptr = ctx.ty_ptr(StorageClass::UniformConstant, array_ty);
++            let var = ctx.module.fresh_id();
++            ctx.new_globals.push(Instruction::new(
++                Op::Variable,
++                Some(pptr),
++                Some(var),
++                vec![Operand::StorageClass(StorageClass::UniformConstant)],
++            ));
++            let binding = required_resource_binding(*pid, resource_binding)?;
++            decorate_binding(&mut ctx.module, var, descriptor_layout.set, binding);
++            ctx.interface_buffer_var(var);
++            bindings.push((*pid, ParamBinding::SamplerArray { var, elem_ty }));
+         } else if role_is("sampler") {
+             let sty = ctx.ty_sampler();
+             let pptr = ctx.ty_ptr(StorageClass::UniformConstant, sty);
+diff --git a/translator/translator/src/passes/stage_output/mod.rs b/translator/translator/src/passes/stage_output/mod.rs
+index a888108..bb10a3f 100644
+--- a/translator/translator/src/passes/stage_output/mod.rs
++++ b/translator/translator/src/passes/stage_output/mod.rs
+@@ -682,7 +682,11 @@ pub(in crate::passes) fn rewrite_return(
+     }
+     let defs = &output_defs;
+     let mut outputs: Vec<OutputWrite> = vec![];
+-    let rdef = defs.get(&ret_ty).cloned();
++    // The snapshot predates any type a pass minted for this entry's return value; a miss here used to skip every output silently.
++    // LOCAL-FIX (Hackintosh): DO NOT REVERT to `defs.get(&ret_ty)` alone. The snapshot predates types minted by earlier passes; a miss used to
++    // drop EVERY vertex output silently (Skia Graphite/Dawn: black backgrounds + flicker). See git log, branch local-mods.
++    let rdef = defs.get(&ret_ty).cloned().or_else(|| type_def_of(ctx, ret_ty));
++    // Upstream 1.15.0 (4b0a8c7) refreshes `defs` above; our fallback stays for any type minted outside that table.
+     if rdef.is_none() && matches!(stage, Stage::Vertex | Stage::Fragment) {
+         return Err(format!("stage output return type {ret_ty} has no current definition"));
+     }
+diff --git a/translator/translator/src/reflect/mod.rs b/translator/translator/src/reflect/mod.rs
+index 4c559ae..9e597a1 100644
+--- a/translator/translator/src/reflect/mod.rs
++++ b/translator/translator/src/reflect/mod.rs
+@@ -20,6 +20,10 @@ pub const KERNEL_DISPATCH_PUSH_CONSTANT_SIZE: u32 = 48;
+ 
+ pub const KERNEL_LOCAL_SIZE_SPEC_IDS: [u32; 3] = [0, 1, 2];
+ 
++/// SpecId of the fragment raster sample count when it was not known at translation time (Metal libraries are
++/// translated before any pipeline exists). The host specializes it with the pipeline's rasterizationSamples.
++pub const RASTER_SAMPLE_COUNT_SPEC_ID: u32 = 0x4E56_0001;
++
+ pub const DEFAULT_KERNEL_DISPATCH_PUSH_CONSTANT_OFFSET: u32 = 0;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+diff --git a/translator/wrapper/src/buffer_addresses.rs b/translator/wrapper/src/buffer_addresses.rs
+index 99114d4..af77d5b 100644
+--- a/translator/wrapper/src/buffer_addresses.rs
++++ b/translator/wrapper/src/buffer_addresses.rs
+@@ -25,6 +25,69 @@ fn keep_stated_align(scalar: u32, stated: Option<&Operand>) -> u32 {
+     match stated { Some(Operand::LiteralBit32(a)) if a.is_power_of_two() && *a <= 16 => scalar.max(*a), _ => scalar }
+ }
+ 
++#[derive(Clone, Copy)]
++struct Table { var: u32, elem: u32, pair: bool }
++enum Merge { None, Into(Table), Keep }
++// The translator's own table at TABLE_BINDING, if the module has one in the layout this pass emits (StorageBuffer, set 0,
++// one-member block holding an array of u64 with stride 8). Keep = a table this pass cannot extend.
++fn merge_table(m: &rspirv::dr::Module, defs: &HashMap<u32, Instruction>, bindings: &HashMap<u32, u32>) -> Merge {
++    if std::env::var_os("NVMTL_NO_TABLE_MERGE").is_some() {
++        return if bindings.values().any(|b| *b == TABLE_BINDING) { Merge::Keep } else { Merge::None };
++    }
++    let Some((&var, _)) = bindings.iter().find(|(_, b)| **b == TABLE_BINDING) else { return Merge::None };
++    let Some(v) = defs.get(&var).filter(|i| i.class.opcode == Op::Variable && i.operands.first() == Some(&Operand::StorageClass(StorageClass::StorageBuffer))) else { return Merge::Keep };
++    let Some(pt) = v.result_type.and_then(|t| defs.get(&t)) else { return Merge::Keep };
++    let Some(block) = pt.operands.get(1).and_then(id).and_then(|b| defs.get(&b)) else { return Merge::Keep };
++    if block.class.opcode != Op::TypeStruct || block.operands.len() != 1 { return Merge::Keep; }
++    let Some(arr) = id(&block.operands[0]).and_then(|a| defs.get(&a)) else { return Merge::Keep };
++    if !matches!(arr.class.opcode, Op::TypeRuntimeArray | Op::TypeArray) { return Merge::Keep; }
++    let Some(elem) = arr.operands.first().and_then(id) else { return Merge::Keep };
++    // u64 entries, or uvec2 (the translator's native table reads texture metadata as two u32 words)
++    let pair = match defs.get(&elem).map(|e| (e.class.opcode, e.operands.clone())) {
++        Some((Op::TypeInt, o)) if o == vec![Operand::LiteralBit32(64), Operand::LiteralBit32(0)] => false,
++        Some((Op::TypeVector, o)) if o.len() == 2 && o[1] == Operand::LiteralBit32(2)
++            && id(&o[0]).and_then(|c| defs.get(&c)).is_some_and(|c| c.class.opcode == Op::TypeInt && c.operands == vec![Operand::LiteralBit32(32), Operand::LiteralBit32(0)]) => true,
++        _ => return Merge::Keep,
++    };
++    let stride = m.annotations.iter().find_map(|a| match a.operands.as_slice() {
++        [Operand::IdRef(n), Operand::Decoration(Decoration::ArrayStride), Operand::LiteralBit32(s)] if Some(*n) == arr.result_id => Some(*s), _ => None });
++    if stride != Some(8) { return Merge::Keep; }
++    let set = m.annotations.iter().find_map(|a| match a.operands.as_slice() {
++        [Operand::IdRef(n), Operand::Decoration(Decoration::DescriptorSet), Operand::LiteralBit32(s)] if *n == var => Some(*s), _ => None });
++    if set != Some(0) { return Merge::Keep; }
++    Merge::Into(Table { var, elem, pair })
++}
++// Pointer types of the table variable and of every pointer derived from it: they stay StorageBuffer pointers (the
++// conversion to physical pointers below must not touch them), and a buffer that shares one of them keeps the module as is.
++fn table_pointer_types(m: &rspirv::dr::Module, table: u32) -> (HashSet<u32>, Vec<u32>, bool) {
++    let mut derived: HashSet<u32> = HashSet::from([table]);
++    let mut types = HashSet::new();
++    if let Some(t) = m.types_global_values.iter().find(|i| i.result_id == Some(table)).and_then(|i| i.result_type) { types.insert(t); }
++    loop {
++        let before = derived.len();
++        for i in m.all_inst_iter() {
++            if matches!(i.class.opcode, Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain | Op::CopyObject)
++                && i.operands.first().and_then(id).is_some_and(|b| derived.contains(&b)) {
++                if let Some(r) = i.result_id { derived.insert(r); }
++                if let Some(t) = i.result_type { types.insert(t); }
++            }
++        }
++        if derived.len() == before { break; }
++    }
++    // values not derived from the table that have one of its pointer types (a buffer element pointer of the same type, e.g.
++    // StorageBuffer u32): the caller gives them a pointer type of their own. Anything but a plain access chain/copy there
++    // (function parameter, phi, select, call) could mix table and buffer pointers, so the module is kept as it is.
++    let mut other = Vec::new(); let mut conflict = false;
++    for i in m.all_inst_iter() {
++        if let (Some(t), Some(r)) = (i.result_type, i.result_id) {
++            if types.contains(&t) && !derived.contains(&r) && r != table {
++                if matches!(i.class.opcode, Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain | Op::CopyObject) { other.push(r); }
++                else { conflict = true; }
++            }
++        }
++    }
++    (types, other, conflict)
++}
+ pub fn lower(bytes: &[u8]) -> Result<Vec<u8>, String> {
+     match crate::linearize::apply(bytes) {
+         Ok((lin, _why)) => lower_addresses(&lin),
+@@ -34,7 +97,7 @@ pub fn lower(bytes: &[u8]) -> Result<Vec<u8>, String> {
+ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+     let mut m = rspirv::dr::load_bytes(bytes).map_err(|e| e.to_string())?;
+     let defs: HashMap<_,_> = m.types_global_values.iter().filter_map(|i| i.result_id.map(|n|(n,i.clone()))).collect();
+-    let sb_types: HashMap<u32,u32> = defs.iter().filter_map(|(&n,i)| {
++    let mut sb_types: HashMap<u32,u32> = defs.iter().filter_map(|(&n,i)| {
+         (i.class.opcode == Op::TypePointer && i.operands.first() == Some(&Operand::StorageClass(StorageClass::StorageBuffer)))
+             .then(|| (n, id(&i.operands[1]).unwrap()))
+     }).collect();
+@@ -46,12 +109,42 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+             }
+         }
+     }
++    // A module the translator already gave an address table (pointer arguments, texture metadata) used to be returned as it
++    // was, so its plain buffers stayed descriptors: every setFragmentBytes then needed a new descriptor set per draw. Its
++    // remaining buffers are now lowered onto that same table (same layout: one u64 address per buffer slot) when the table's
++    // own pointer types are not shared with them; otherwise the module is returned unchanged as before.
++    let existing = match merge_table(&m, &defs, &bindings) { Merge::None => None, Merge::Into(t) => Some(t), Merge::Keep => return Ok(bytes.to_vec()) };
++    let (table_types, shared_vals, conflict) = match existing { Some(t) => table_pointer_types(&m, t.var), None => (HashSet::new(), Vec::new(), false) };
++    if conflict { return Ok(bytes.to_vec()); }
++    for t in &table_types { sb_types.remove(t); }
++    let mut next0 = m.header.as_ref().ok_or("no SPIR-V header")?.bound;
++    if !shared_vals.is_empty() {
++        // one clone per shared pointer type for the buffer side; the clones become physical pointers below
++        let mut clone: HashMap<u32, u32> = HashMap::new();
++        let shared: HashSet<u32> = shared_vals.iter().copied().collect();
++        let mut add = Vec::new();
++        for f in &mut m.functions { for b in &mut f.blocks { for i in &mut b.instructions {
++            if i.result_id.is_some_and(|r| shared.contains(&r)) {
++                let t = i.result_type.unwrap();
++                let c = *clone.entry(t).or_insert_with(|| { let n = next0; next0 += 1; add.push((n, t)); n });
++                i.result_type = Some(c);
++            }
++        }}}
++        for (n, t) in add {
++            let pointee = defs.get(&t).and_then(|d| d.operands.get(1)).and_then(id).ok_or("shared pointer type without a pointee")?;
++            m.types_global_values.push(inst(Op::TypePointer, None, Some(n), vec![Operand::StorageClass(StorageClass::StorageBuffer), Operand::IdRef(pointee)]));
++            sb_types.insert(n, pointee);
++        }
++        m.header.as_mut().unwrap().bound = next0;
++    }
+     let roots: Vec<(u32,u32,u32)> = m.types_global_values.iter().filter_map(|i| {
+-        (i.class.opcode == Op::Variable && i.operands.first() == Some(&Operand::StorageClass(StorageClass::StorageBuffer)))
++        (i.class.opcode == Op::Variable && i.operands.first() == Some(&Operand::StorageClass(StorageClass::StorageBuffer))
++            && Some(i.result_id.unwrap()) != existing.map(|t| t.var))
+             .then(|| (i.result_id.unwrap(),i.result_type.unwrap(),*bindings.get(&i.result_id.unwrap()).unwrap_or(&u32::MAX)))
+     }).collect();
+     if roots.is_empty() { return Ok(bytes.to_vec()); }
+-    if bindings.values().any(|b| *b == TABLE_BINDING) { return Ok(bytes.to_vec()); }
++    if existing.is_none() && bindings.values().any(|b| *b == TABLE_BINDING) { return Ok(bytes.to_vec()); }
++    if existing.is_some() && roots.iter().any(|r| table_types.contains(&r.1)) { return Ok(bytes.to_vec()); }
+     for &(n,_,b) in &roots {
+         if b >= 32 || sets.get(&n) != Some(&0) { return Err(format!("unsupported source buffer descriptor {n}, binding {b}")); }
+     }
+@@ -75,6 +168,12 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+     m.types_global_values.retain(|i|!i.result_id.is_some_and(|n|root_ids.contains(&n)));
+     m.annotations.retain(|i| !i.operands.first().and_then(id).is_some_and(|n|root_ids.contains(&n)));
+     m.debug_names.retain(|i| !i.operands.first().and_then(id).is_some_and(|n|root_ids.contains(&n)));
++    // a pointer type of our own for the table accesses: an existing StorageBuffer u64 pointer may belong to a lowered buffer
++    let (table, ptr_ulong) = if let Some(t) = existing {
++        let pu = fresh(); m.types_global_values.push(inst(Op::TypePointer,None,Some(pu),vec![Operand::StorageClass(StorageClass::StorageBuffer),Operand::IdRef(t.elem)]));
++        (t.var, pu)
++    } else { (0, 0) };
++    let (table, ptr_ulong) = if existing.is_some() { (table, ptr_ulong) } else {
+     let arr=fresh(); let block=fresh(); let ptr_block=fresh(); let ptr_ulong=fresh(); let table=fresh();
+     m.types_global_values.extend([
+         inst(Op::TypeRuntimeArray,None,Some(arr),vec![Operand::IdRef(ulong)]),
+@@ -91,13 +190,14 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+         inst(Op::Decorate,None,None,vec![Operand::IdRef(table),Operand::Decoration(Decoration::Binding),Operand::LiteralBit32(TABLE_BINDING)]),
+         inst(Op::Decorate,None,None,vec![Operand::IdRef(table),Operand::Decoration(Decoration::NonWritable)]),
+     ]);
++    (table, ptr_ulong) };
+     let mut constants=HashMap::new();
+     for b in std::iter::once(0).chain(roots.iter().map(|r|r.2)) {
+         constants.entry(b).or_insert_with(|| { let n=fresh(); m.types_global_values.push(inst(Op::Constant,Some(uint),Some(n),vec![Operand::LiteralBit32(b)])); n });
+     }
+     for e in &mut m.entry_points {
+         e.operands.retain(|o|!id(o).is_some_and(|n|root_ids.contains(&n)));
+-        if m.header.as_ref().unwrap().version >= 0x00010400 { e.operands.push(Operand::IdRef(table)); }
++        if m.header.as_ref().unwrap().version >= 0x00010400 && !e.operands.contains(&Operand::IdRef(table)) { e.operands.push(Operand::IdRef(table)); }
+     }
+     for cap in [Capability::Int64,Capability::PhysicalStorageBufferAddresses] {
+         if !m.capabilities.iter().any(|i|i.operands==vec![Operand::Capability(cap)]) { m.capabilities.push(inst(Op::Capability,None,None,vec![Operand::Capability(cap)])); }
+@@ -110,11 +210,22 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
+         let mut replace=HashMap::new(); let mut prelude=Vec::new();
+         for &(root,ty,b) in &roots {
+             let p=fresh(); let addr=fresh(); let physical=fresh();
++            if let Some(t) = existing.filter(|t| t.pair) {
++                let words=fresh();
++                prelude.extend([
++                    inst(Op::AccessChain,Some(ptr_ulong),Some(p),vec![Operand::IdRef(table),Operand::IdRef(constants[&0]),Operand::IdRef(constants[&b])]),
++                    inst(Op::Load,Some(t.elem),Some(words),vec![Operand::IdRef(p)]),
++                    inst(Op::Bitcast,Some(ulong),Some(addr),vec![Operand::IdRef(words)]),
++                    inst(Op::ConvertUToPtr,Some(ty),Some(physical),vec![Operand::IdRef(addr)]),
++                ]);
++            } else {
+             prelude.extend([
+                 inst(Op::AccessChain,Some(ptr_ulong),Some(p),vec![Operand::IdRef(table),Operand::IdRef(constants[&0]),Operand::IdRef(constants[&b])]),
+                 inst(Op::Load,Some(ulong),Some(addr),vec![Operand::IdRef(p)]),
+                 inst(Op::ConvertUToPtr,Some(ty),Some(physical),vec![Operand::IdRef(addr)]),
+-            ]); replace.insert(root,physical);
++            ]);
++            }
++            replace.insert(root,physical);
+         }
+         for param in &f.parameters {
+             if param.result_type.is_some_and(|t|sb_types.contains_key(&t)) {
+diff --git a/translator/wrapper/src/lib.rs b/translator/wrapper/src/lib.rs
+index b95fce8..9a74f6d 100644
+--- a/translator/wrapper/src/lib.rs
++++ b/translator/wrapper/src/lib.rs
+@@ -42,9 +42,14 @@ thread_local! { static RSC: std::cell::Cell<u32> = const { std::cell::Cell::new(
+ #[no_mangle]
+ pub extern "C" fn nvmtl_translate_set_raster_sample_count(n: u32) { RSC.with(|c| c.set(n)); }
+ fn apply_rsc(mut o: metal2vulkan::passes::TransformOptions) -> metal2vulkan::passes::TransformOptions {
++    // Local (DO-NOT-REVERT): only a count the plugin named is baked in. Unnamed (0) stays None, so the translator emits
++    // get_num_samples as the RASTER_SAMPLE_COUNT_SPEC_ID specialization constant and the plugin passes the pipeline's real
++    // count (nvmtl_vk.c). Upstream's default Some(1) made every MSAA pipeline read 1 sample.
+     if o.raster_sample_count.is_none() {
+         let n = RSC.with(|c| c.get());
+-        o.raster_sample_count = Some(if matches!(n, 1 | 2 | 4 | 8 | 16 | 32 | 64) { n } else { 1 });
++        if matches!(n, 1 | 2 | 4 | 8 | 16 | 32 | 64) {
++            o.raster_sample_count = Some(n);
++        }
+     }
+     o
+ }

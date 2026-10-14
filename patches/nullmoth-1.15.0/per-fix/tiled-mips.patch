@@ -1,0 +1,23 @@
+diff --git a/plugin/NVMTLObjects.m b/plugin/NVMTLObjects.m
+index f915f75..3893c7d 100644
+--- a/plugin/NVMTLObjects.m
++++ b/plugin/NVMTLObjects.m
+@@ -798,6 +798,9 @@ - (IOSurfaceRef)iosurface { return NULL; }
+     // fills recycled buffers after making the texture): remember the source and re-upload it when its bytes change.
+     if (c && [(id)c isKindOfClass:[NVMTLTexture class]]) {
+         NVMTLTexture *ct = (NVMTLTexture *)c; const size_t len = (size_t)bpr * d.height;
++        // The buffer holds level 0 only; a mipmapped descriptor asks the driver for the rest of the chain (Core Animation
++        // makes trilinear layer contents this way - Dock badge numbers vanished below magnified size with levels 1+ empty).
++        if (ct->_i.mips > 1 && nvmtl_vk_image_gen_mipmaps(ct->_q, &ct->_i)) nvlog("newTiledTextureWithDescriptor: mipmap generation FAILED (%ux%u, %u levels)", ct->_i.w, ct->_i.h, ct->_i.mips);
+         if ((ct->_cpyShadow = malloc(len))) { memcpy(ct->_cpyShadow, (char *)base + offset, len);
+             ct->_cpyBuf = self; ct->_cpyOff = offset; ct->_cpyBPR = bpr; ct->_cpyLen = len; } }
+     { static int said; if (!said++) nvlog("newTiledTextureWithDescriptor: linear view refused -> copied texture (%lux%lu bpr %lu; said once)",
+@@ -1224,6 +1227,8 @@ - (void)nvmtlCopyIn {
+         memcpy(r->_cpyShadow, src + r->_cpyOff, r->_cpyLen);
+         if (nvmtl_vk_image_write_region_level_layer(r->_q, &r->_i, r->_cpyShadow, r->_cpyBPR, 0, 0, r->_i.w, r->_i.h, 0, 0))
+             nvlog("copied buffer texture: re-upload FAILED (%ux%u)", r->_i.w, r->_i.h);
++        else if (r->_i.mips > 1 && nvmtl_vk_image_gen_mipmaps(r->_q, &r->_i))
++            nvlog("copied buffer texture: mipmap generation FAILED (%ux%u, %u levels)", r->_i.w, r->_i.h, r->_i.mips);
+         else { static _Atomic unsigned long long n; const unsigned long long k = atomic_fetch_add(&n, 1) + 1;
+             if (!(k & (k - 1))) nvlog("copied buffer texture (linear view refused): re-synced from its buffer %llu times (last %ux%u)", k, r->_i.w, r->_i.h); }
+     }

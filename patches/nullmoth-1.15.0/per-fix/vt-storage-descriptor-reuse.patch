@@ -1,0 +1,47 @@
+diff --git a/plugin/nvmtl_vk.c b/plugin/nvmtl_vk.c
+index 46c99a3..f2c9319 100644
+--- a/plugin/nvmtl_vk.c
++++ b/plugin/nvmtl_vk.c
+@@ -2130,9 +2130,11 @@ static int nvmtl_dirty_only_on(void)
+         nvlog("vk: dirty-only bindings %s (NVMTL_NO_DIRTYONLY=%s)", on ? "ON - unchanged descriptors are copied, unchanged argument-buffer tables skipped" : "OFF", e ? e : "unset"); }
+     return on;
+ }
++// chg covers every slot including the storage textures (193..320), which the 4-word pipeline masks (bindings below 256) leave out
++#define NVMTL_CHGW ((NVMTL_NBIND + 63) / 64)
+ typedef struct { nvmtl_slot s[2][NVMTL_NBIND];
+                  uint8_t dirty[2]; VkDescriptorSet last[2]; unsigned last_idx[2]; uint32_t last_hi[2]; uint64_t lastw[2][4];
+-                 uint64_t chg[2][4]; uint64_t texgen[2]; const void *emb_fn[2]; uint64_t emb_gen[2]; uint32_t emb_n[2];
++                 uint64_t chg[2][NVMTL_CHGW]; uint64_t texgen[2]; const void *emb_fn[2]; uint64_t emb_gen[2]; uint32_t emb_n[2];
+                  uint64_t emb_key[2][NVMTL_EMB_KEYMAX];
+                  uint32_t last_dyn[2]; void *last_tblbuf[2]; } nvmtl_bindtable;
+ 
+@@ -2960,6 +2962,10 @@ static VkDescriptorSet nvmtl_snapshot_set_c(nvk_cmdbuf *c, uint32_t which, const
+             hit |= x;
+             if (pm[k] & ~t->lastw[which][k]) covered = 0;
+         }
++        // The pipeline masks hold no storage textures (nvmtl_spirv_bmask skips bindings 480+), so a changed storage texture
++        // must stop the reuse here: VideoToolbox's two-pass scaler changes only its output textures between the passes, and
++        // the second pass wrote into the first pass's intermediate through the reused set (Photos/Preview scaled images blank).
++        for (uint32_t j = 0; j < hi && !hit; j++) { const uint32_t i = NVMTL_STEX_BASE + j; hit |= (t->chg[which][i >> 6] >> (i & 63)) & 1; }
+         if (covered && !hit) {
+             if (!NVMTL_E78_HAS(pm, NVMTL_ADDRESS_BINDING)) {
+                 nvmtl_enc78_count(E78C_SETREUSE, 1); c->dyn[which] = t->last_dyn[which]; c->tblbuf[which] = t->last_tblbuf[which]; return t->last[which];
+@@ -2977,15 +2983,15 @@ static VkDescriptorSet nvmtl_snapshot_set_c(nvk_cmdbuf *c, uint32_t which, const
+     uint64_t m[4];
+     for (int k = 0; k < 4; k++) m[k] = pm[k] | (live ? t->lastw[which][k] : 0);
+     if (live && t->last_hi[which] > hi) hi = t->last_hi[which];
+-    VkDescriptorSet from = VK_NULL_HANDLE; uint64_t cm[4] = { 0, 0, 0, 0 };
++    VkDescriptorSet from = VK_NULL_HANDLE; uint64_t cm[NVMTL_CHGW] = { 0 };   // the set writer tests copy bits up to slot NVMTL_NBIND - 1
+     if (live && nvmtl_dirty_only_on()) {
+         from = t->last[which];
+         for (int k = 0; k < 4; k++) cm[k] = t->lastw[which][k];
+-        for (uint32_t j = 0; j < NVMTL_NSTEX && NVMTL_STEX_BASE + j < 256; j++) {
++        for (uint32_t j = 0; j < hi && j < NVMTL_NSTEX; j++) {   // the set writer looks at storage slots below hi only
+             const uint32_t i = NVMTL_STEX_BASE + j;
+             if (j < t->last_hi[which]) cm[i >> 6] |= 1ull << (i & 63); else cm[i >> 6] &= ~(1ull << (i & 63));
+         }
+-        for (int k = 0; k < 4; k++) cm[k] &= ~t->chg[which][k];
++        for (int k = 0; k < NVMTL_CHGW; k++) cm[k] &= ~t->chg[which][k];
+     }
+     VkDescriptorSet s = nvmtl_snapshot_set_md(c, which, hi, m, NULL, from, from ? cm : NULL);
+     if (!s) return s;
