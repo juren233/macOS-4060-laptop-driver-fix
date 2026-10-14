@@ -7,7 +7,7 @@ HERE=${0:A:h}
 G=${EFIGUARD_SNAP:-/Library/NullMoth/efiguard}
 PL=/Library/LaunchDaemons/local.efiguard.plist
 UUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}
-# disk numbers move between boots (seen on macOS 26: disk1s4 one boot, disk0s4 the next): the ESP is found by its partition UUID
+# disk numbers occasionally change (two NVMe drives, probe order varies: disk1s4 / disk0s4): the ESP is found by its partition UUID
 DEV=; [[ -n $EFIGUARD_ROOT ]] || for d in $(diskutil list 2>/dev/null | awk '/ EFI /{print $NF}'); do [[ "$(diskutil info $d 2>/dev/null | awk -F': *' '/Partition UUID/{print $2}')" == $UUID ]] && { DEV=$d; break; }; done
 PB=/usr/libexec/PlistBuddy
 if [[ $1 == remove ]]; then launchctl bootout system $PL 2>/dev/null || true; rm -f $PL; chflags -R noschg $G 2>/dev/null; rm -rf $G; echo "efiguard removed (snapshots of replaced files stay in /Library/NullMoth/efiguard-replaced)"; exit 0; fi

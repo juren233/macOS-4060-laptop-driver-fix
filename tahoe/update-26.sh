@@ -16,7 +16,7 @@ ESPUUID=${ESP_UUID:-$(cat /Library/NullMoth/tahoe/esp-uuid 2>/dev/null)};   # pr
 [ -n "$ESPUUID" ] || { echo "STOP: run with sudo -E ESP_UUID=<Partition UUID of your OpenCore ESP>"; exit 1; }
  PB=/usr/libexec/PlistBuddy
 DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done)
-DEV=${DEV:-ESP-not-found}   # disk numbers move between boots (disk1s4 on 15, disk0s4 after some 26 boots): find the ESP by its partition UUID
+DEV=${DEV:-ESP-not-found}   # disk numbers occasionally change (two NVMe drives, probe order varies: disk1s4 / disk0s4): find the ESP by its partition UUID
 BA=":NVRAM:Add:7C436110-AB2A-4BBB-A880-FE41995C9F82:boot-args"
 NVA26=118c5212ebb1ddddee5016df6b629d2b916773a9f379f1f1ba95e315022d2cef
 KC=/Library/KernelCollections/AuxiliaryKernelExtensions.kc

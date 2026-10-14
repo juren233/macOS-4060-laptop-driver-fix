@@ -398,7 +398,7 @@ nvguard 只守护 `/Library` 下的驱动文件；**OpenCore ESP 上的修复**�
 - ESP 已被别人挂载时不会卸载它（只读检查，推迟修复）；不碰 `OpenCore.efi`、引导器和启动项。
 - 有意改过 EFI（`apply-*.sh`）之后要重跑 `install.sh` 刷新快照。日志 `/var/log/efiguard.log`，`nvguard/verify.sh` 里有对应的检查项。
 - 测试方式：设 `EFIGUARD_ROOT`（一个含 `EFI/OC` 的目录）和 `EFIGUARD_SNAP`、`EFIGUARD_TEST=1` 就能在 ESP 的副本上演练，不碰系统。
-- **按分区 UUID 找 ESP**（`ESP_UUID`）：macOS 26 上盘号每次开机可能不同（`disk1s4` / `disk0s4`），写死的盘号会让守护去查错盘或直接停下。
+- **按分区 UUID 找 ESP**（`ESP_UUID`）：盘号偶尔会变（两块 NVMe 的识别先后不固定，见第 32 项），写死的盘号会让守护去查错盘或直接停下。
 - macOS 26：也守护 `-no_compat_check`、`revpatch=`（没有它们 26 开不了机 / 收不到更新）；救援配置生效时（`EFI/OC/rescue/ACTIVE`，第 32 项）完全不碰 ESP。
 
 ## 十一、macOS 26（Tahoe）
@@ -421,7 +421,9 @@ macOS 26 专用的脚本都在 [`tahoe/`](../tahoe/README.md)。作者本机：m
   **别用升级前的 EFI 备份救 26**：它没有 `-no_compat_check`，26 开不了机。
 - **恢复模式入口**（`tahoe/add-ocrec.sh`，适用于用 Limine 引导 OpenCore 的布局）：把 `EFI/OC` 复制成 `EFI/OCREC`（同样的 kext / ACPI / boot-args，26 仍能启动），
   把副本的 `config.plist` 设成立即显示 OpenCore 选单（`ShowPicker`、`Timeout 0`、`HideAuxiliary false`），并在 Limine 菜单里加一项 “macOS Recovery”。`EFI/OC` 本身不变；`add-ocrec.sh undo` 撤销。
-- **盘号会变**：26 上 ESP 有时是 `disk1s4`、有时是 `disk0s4`。仓库里所有改 ESP 的脚本都按分区 UUID（`ESP_UUID`）找 ESP，不再用盘号。
+- **ESP 的盘号偶尔会变**：这台机器有两块 NVMe，macOS 按识别先后编号，先后不固定。系统日志里 20 次开机，19 次 ESP 是 `disk1s4`（装 macOS 的盘先出来，Windows 盘约 20 秒后出现，成为 disk0），
+  1 次是 `disk0s4`（两块几乎同时出现，装 macOS 的盘拿到了 disk0）。平时的 `disk0s4` 恰好是 Windows 盘上的“Windows 恢复”分区，写死盘号很危险。
+  仓库里所有改 ESP 的脚本都按分区 UUID（`ESP_UUID`）找 ESP，不再用盘号。查自己的机器：`log show --predicate 'process == "diskarbitrationd" AND eventMessage BEGINSWITH "created disk"'`。
 - 升级后检查：Wi-Fi、蓝牙、亮度、声音（第 33 项）、电源（第 34 项）、HiDPI@165Hz。**不要测系统睡眠**（不受支持，见 docs/pitfalls.md）。
 
 ### 33. macOS 26 没有内置声卡（AppleHDA 被移除）

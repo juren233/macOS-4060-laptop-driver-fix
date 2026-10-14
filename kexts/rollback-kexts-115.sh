@@ -15,7 +15,7 @@ for k in NVRM NVAccel NVRMFB NVRMAGDC; do [ -d "$BK/$k.kext" ] || { echo "backup
 cp -p "$BK/AuxiliaryKernelExtensions.kc" "$KC" && cmp -s "$BK/AuxiliaryKernelExtensions.kc" "$KC" || f=1
 [ $f = 0 ] && echo "restored: kexts + kernel collection from $BK" || echo "KEXT RESTORE HAD ERRORS"
 ESPUUID=${ESP_UUID:-}   # the ESP step (NVDSM.kext back) needs it: sudo -E ESP_UUID=<uuid> ...
-DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}   # disk numbers move between boots: find the ESP by UUID
+DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}   # disk numbers occasionally change (NVMe probe order): find the ESP by UUID
 export PATH=/usr/local/bin:$PATH MTOOLS_SKIP_CHECK=1; I=(-i /dev/$DEV)
 if [ -z "$ROOT" ] && [ -n "$ESPUUID" ] && [ -f "$BK/NVDSM.kext/Contents/MacOS/NVDSM" ] && command -v mcopy >/dev/null \
    && [ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = "$ESPUUID" ]; then

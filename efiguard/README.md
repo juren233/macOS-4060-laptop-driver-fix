@@ -10,7 +10,7 @@ sudo -E ESP_UUID=$(diskutil info disk1s4 | awk -F': *' '/Partition UUID/{print $
 - `install.sh`：把 `EFI/OC` 的 `config.plist`、`Kexts`、`ACPI`、`Drivers` 拍快照到 `/Library/NullMoth/efiguard`（`chflags schg`），
   生成 `required-kexts.txt`（当前所有启用的 `Kernel/Add`）和 `required-bootargs.txt`（带我们修复的 boot-args，含 macOS 26 需要的 `-no_compat_check`、`revpatch=`），注册 LaunchDaemon `local.efiguard`（开机 + 每 6 小时）。
   拒绝给“已损坏”的状态拍快照：任何启用的 kext 在 ESP 上不存在就停下。
-- **按分区 UUID 找 ESP**：macOS 26 上盘号每次开机可能不同（`disk1s4` / `disk0s4`），守护每次运行都按 `esp.conf` 里的 UUID 重新查找。
+- **按分区 UUID 找 ESP**：盘号偶尔会变（两块 NVMe 的识别先后不固定，`disk1s4` / `disk0s4`），守护每次运行都按 `esp.conf` 里的 UUID 重新查找。
 - `efiguard.sh`：先**只读**挂载 ESP 检查；只有需要修复时才读写挂载。
   - ESP 上有 `EFI/OC/rescue/ACTIVE`（`tahoe/` 的救援配置生效中）→ 什么都不做，直到救援配置被撤销。
   - 文件缺失 → 从快照补回；

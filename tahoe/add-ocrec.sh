@@ -8,7 +8,7 @@
 set -u
 ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil info <disk>)}; PB=/usr/libexec/PlistBuddy
 DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done)
-DEV=${DEV:-ESP-not-found}   # disk numbers move between boots (disk1s4 on 15, disk0s4 after some 26 boots): find the ESP by its partition UUID
+DEV=${DEV:-ESP-not-found}   # disk numbers occasionally change (two NVMe drives, probe order varies: disk1s4 / disk0s4): find the ESP by its partition UUID
 HERE=$(cd "$(dirname "$0")" && pwd); MODE=${1:-add}
 die() { echo "STOP: $*"; [ -n "${MP:-}" ] && { sync; umount "$MP" 2>/dev/null; rmdir "$MP" 2>/dev/null; }; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run with sudo"

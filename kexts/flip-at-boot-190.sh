@@ -19,7 +19,7 @@ echo "== 1/3 install kexts (NVRM: head-scaler + flip-at-boot patches)"
 bash "$HERE/install-kexts-190.sh"
 
 echo "== 2/3 OpenCore config on the ESP + live NVRAM: drop -nvrmnoflip"
-ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}; DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}   # disk numbers move between boots: find the ESP by its partition UUID
+ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}; DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}   # disk numbers occasionally change (NVMe probe order): find the ESP by its partition UUID
 [ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ]
 diskutil unmount $DEV >/dev/null 2>&1 || true
 MP=$(mktemp -d /private/var/tmp/esp.XXXX); mount -t msdos /dev/$DEV "$MP"

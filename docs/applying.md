@@ -10,7 +10,7 @@
   export ESP_UUID=$(diskutil info disk1s4 | awk -F': *' '/Partition UUID/{print $2}')   # disk1s4 换成你现在的 ESP（diskutil list）
   ```
   `wifibt/install-airportitlwm.sh`、`oc-bootarg.sh`、`backlight/enable-ec.sh`、`install-builtin-bl.sh`、`kexts/install-kexts-115.sh` 等用 `mtools` 直接写 ESP，需要 `brew install mtools`。
-  不用盘号是因为**盘号每次开机可能不同**（macOS 26 上见过 `disk1s4` / `disk0s4`）。以 root 运行时用 `sudo -E` 把变量带进去。
+  不用盘号是因为**盘号偶尔会变**：两块 NVMe 的识别先后不固定，作者 20 次开机里有 1 次 ESP 从 `disk1s4` 变成 `disk0s4`。以 root 运行时用 `sudo -E` 把变量带进去。
 
 ## 1. 取得上游源码并打补丁
 

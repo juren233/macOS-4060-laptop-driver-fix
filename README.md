@@ -81,7 +81,7 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 29 | WebGL 大量绘制（Aquarium）帧率低 | 每次 draw 新建描述符集；发行版仍在求值跟踪参数；采样纹理的片元着色器缓冲走描述符 | 只变字节环时复用描述符集（动态偏移地址表）；跟踪参数按需求值；**翻译器**把剩余缓冲并到地址表（3.13 → 1.56 µs/draw，5000 条鱼 41 → 73 fps）。复用曾让 VideoToolbox 两遍缩放输出空白（照片/预览缩略图），1.15.0 版已修 | `per-fix/{nvtrace-release,descriptor-table-reuse,translator-table-merge}.patch`、`nullmoth-1.15.0/per-fix/vt-storage-descriptor-reuse.patch`、`hidpi/catest/drawbench.m` |
 | 30 | Dock 角标数字只有放大 Dock 时才看得见 | Core Animation 用 `newTiledTextureWithBytesNoCopy` 建带 mipmap 的纹理，缓冲里只有第 0 级、其余要驱动生成，插件没生成 → 缩小后数字淡没 | 上传及每次重新上传后生成整条 mip 链 | `patches/nullmoth-1.15.0/per-fix/tiled-mips.patch`、`hidpi/catest/tiledmips.m` |
 | 31 | 微信输入法开机后在自启应用（Claude、Steam…）里打不了字 | 这些应用在 WeType 登记前向 `imklaunchagent` 要端点，拿到“无端点”后一直缓存 | 登录时用 LaunchAgent `open -g` 先启动 WeType（不能 `-j`，否则候选窗口不显示） | `tools/wetype/` |
-| 32 | 升级到 macOS 26：iMacPro1,1 被淘汰、打过补丁的驱动、升级失败怎么救 | 26 拒绝 iMacPro1,1；安装器阶段驱动不能在；NullMoth 要换 26 版 NVAccel；盘号每次开机会变 | 保留 iMacPro1,1 + RestrictEvents + `-no_compat_check revpatch=sbvmm`；升级前停放驱动、首次进 26 自动换 NVAccel 并重建内核集合；ESP 上的救援配置 + Limine 里的恢复模式入口；脚本按分区 UUID 找 ESP | `tahoe/` |
+| 32 | 升级到 macOS 26：iMacPro1,1 被淘汰、打过补丁的驱动、升级失败怎么救 | 26 拒绝 iMacPro1,1；安装器阶段驱动不能在；NullMoth 要换 26 版 NVAccel；ESP 盘号偶尔会变 | 保留 iMacPro1,1 + RestrictEvents + `-no_compat_check revpatch=sbvmm`；升级前停放驱动、首次进 26 自动换 NVAccel 并重建内核集合；ESP 上的救援配置 + Limine 里的恢复模式入口；脚本按分区 UUID 找 ESP | `tahoe/` |
 | 33 | macOS 26 没有内置扬声器/麦克风 | 26 删了 AppleHDA；放回后 `kernelmanagerd` 又不应答它的资源请求，驱动永远等着 | 15.7.9 KDK 的 AppleHDA 放进 `/Library/Apple/System/Library/Extensions` + `kmutil -b`；BTLEFix 1.0.6 代答 `OSKextRequestResource` | `tahoe/audio/`、`wifibt/BTLEFix/` |
 | 34 | macOS 26 插着电源却显示电池供电，FileVault 转换一直“已暂停” | DSDT 的 `AC._PSR` 依赖 Windows 方法，在 macOS 下求值失败；APFS 在电池供电时暂停加密转换 | `SSDT-ACPSR` 提供自己的 `_PSR`（返回 `ACFG`）+ ACPI 改名 `_PSR → XPSR` | `tahoe/power/` |
 
@@ -119,7 +119,7 @@ docs/                     详细文档
    ```bash
    export ESP_UUID=$(diskutil info disk1s4 | awk -F': *' '/Partition UUID/{print $2}')   # disk1s4 换成你现在的 ESP（diskutil list）
    ```
-   脚本每次运行时按这个 UUID 自己找盘——盘号每次开机可能不同（macOS 26 上见过 `disk1s4` / `disk0s4`），所以不再用盘号。用 `sudo -E` 把变量带进去。
+   脚本每次运行时按这个 UUID 自己找盘，不用盘号：机器上有两块 NVMe 时，谁先被识别出来不固定，ESP 的盘号偶尔会变（作者 20 次开机里有 1 次从 `disk1s4` 变成 `disk0s4`）。用 `sudo -E` 把变量带进去。
 3. 先在 `--check` / 备份模式下运行，确认再安装。
 
 ## 许可证

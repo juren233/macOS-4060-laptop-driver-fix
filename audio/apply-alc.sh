@@ -9,7 +9,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 LAYOUT=${1:-11}
 case "$LAYOUT" in ''|*[!0-9]*) echo "STOP: layout must be a number"; exit 1;; esac
 [ "$(id -u)" -eq 0 ] || { echo "STOP: run with sudo"; exit 1; }
-ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}; DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}   # disk numbers move between boots: find the ESP by its partition UUID
+ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil list; diskutil info <disk>)}; DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done); DEV=${DEV:-ESP-not-found}   # disk numbers occasionally change (NVMe probe order): find the ESP by its partition UUID
 [ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] || { echo "STOP: $DEV is not the expected ESP"; exit 1; }
 KEXT=${APPLEALC_KEXT:-$HERE/kexts/AppleALC.kext}
 [ -f "$KEXT/Contents/Info.plist" ] || { echo "STOP: AppleALC.kext not found at $KEXT (download it, see SOURCE.txt, or set APPLEALC_KEXT)"; exit 1; }

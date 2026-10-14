@@ -2,7 +2,7 @@
 # read-only: show ACPI/Add + ACPI/Patch of the live OpenCore config and the SSDT files on the ESP
 PB=/usr/libexec/PlistBuddy
 ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil info <disk>)}
-DEV=; for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { DEV=$d; break; }; done   # disk numbers move between boots: find the ESP by UUID
+DEV=; for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { DEV=$d; break; }; done   # disk numbers occasionally change (NVMe probe order): find the ESP by UUID
 [ -n "$DEV" ] || { echo "STOP: ESP (partition UUID $ESPUUID) not found"; exit 1; }
 diskutil mount $DEV >/dev/null; M=$(diskutil info $DEV | awk -F': +' '/Mount Point/{print $2}')
 C="$M/EFI/OC/config.plist"

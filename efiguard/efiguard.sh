@@ -13,7 +13,7 @@ G=${EFIGUARD_SNAP:-/Library/NullMoth/efiguard}
 REPL=${EFIGUARD_REPLACED:-/Library/NullMoth/efiguard-replaced}
 LOG=${EFIGUARD_LOG:-/var/log/efiguard.log}
 DEV=$(sed -n "s/^DEV=//p" $G/esp.conf 2>/dev/null); UUID=$(sed -n "s/^UUID=//p" $G/esp.conf 2>/dev/null)   # written by install.sh from ESP_UUID
-# disk numbers move between boots (seen on macOS 26): look the ESP up by its partition UUID, esp.conf DEV is only a hint
+# disk numbers occasionally change (NVMe probe order): look the ESP up by its partition UUID, esp.conf DEV is only a hint
 [[ -n $UUID && -z $EFIGUARD_ROOT ]] && for d in $(diskutil list 2>/dev/null | awk '/ EFI /{print $NF}'); do [[ "$(diskutil info $d 2>/dev/null | awk -F': *' '/Partition UUID/{print $2}')" == $UUID ]] && { DEV=$d; break; }; done
 PB=/usr/libexec/PlistBuddy
 log() { print -r -- "$(date '+%F %T') $*" >> $LOG; }

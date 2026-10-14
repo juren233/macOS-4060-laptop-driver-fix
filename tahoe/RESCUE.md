@@ -16,7 +16,7 @@ sh "/Volumes/NO NAME/EFI/OC/rescue/rescue.sh" safe
 reboot
 ```
 
-- 第一行会打印出分区名（比如 `disk1s4`；盘号每次开机可能不同，所以按分区 UUID 找），并显示 mounted。
+- 第一行会打印出分区名（比如 `disk1s4`；盘号偶尔会变，所以按分区 UUID 找），并显示 mounted。
 - 第二行必须看到 `OK: rescue config active`。
 - `/Volumes` 下不叫 `NO NAME` 时，先 `ls /Volumes` 看实际名字。
 

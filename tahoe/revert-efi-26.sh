@@ -6,7 +6,7 @@ BK=${1:-}; HERE=$(cd "$(dirname "$0")" && pwd); SYS=$(cd "$HERE/.." && pwd)
 die() { echo "STOP: $*" >&2; exit 1; }
 ESPUUID=${ESP_UUID:?set ESP_UUID to the Partition UUID of your OpenCore ESP (diskutil info <disk>)}
 DEV=$(for d in $(diskutil list | awk '/ EFI /{print $NF}'); do [ "$(diskutil info $d | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] && { echo $d; break; }; done)
-DEV=${DEV:-ESP-not-found}   # disk numbers move between boots (disk1s4 on 15, disk0s4 after some 26 boots): find the ESP by its partition UUID
+DEV=${DEV:-ESP-not-found}   # disk numbers occasionally change (two NVMe drives, probe order varies: disk1s4 / disk0s4): find the ESP by its partition UUID
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
 [ -f "$BK" ] && tar -tf "$BK" | grep -qx 'EFI/OC/config.plist' || die "give the backup tar"
 [ "$(diskutil info $DEV | awk -F': *' '/Partition UUID/{print $2}')" = $ESPUUID ] || die "$DEV is not the expected ESP"

@@ -3,7 +3,7 @@
 作者本机从 macOS 15.8.1 升级到 **26.7.1**（SMBIOS 仍是 iMacPro1,1，驱动 NullMoth 1.15.0 + 本仓库补丁）时用到的全部东西。
 原因和排查过程见 [docs/fixes.md 第 32–34 项](../docs/fixes.md#十一macos-26tahoe)，操作顺序见 [docs/applying.md 第 9 节](../docs/applying.md#9-升级到-macos-26tahoe)。
 
-> 改 ESP 的脚本都用 `ESP_UUID`（OpenCore 所在 ESP 的分区 UUID）**按 UUID 找盘**：macOS 26 上盘号每次开机可能不同（`disk1s4` / `disk0s4`）。
+> 改 ESP 的脚本都用 `ESP_UUID`（OpenCore 所在 ESP 的分区 UUID）**按 UUID 找盘**：两块 NVMe 的识别先后不固定，ESP 的盘号偶尔会变（`disk1s4` / `disk0s4`）。
 > 运行方式：`sudo -E ESP_UUID=$(diskutil info disk1s4 | awk -F': *' '/Partition UUID/{print $2}') bash <脚本>`（`disk1s4` 换成你现在的 ESP）。
 > 脚本里的 kext / 内核扩展哈希都是**作者的构建**，用在你的机器上要换成你自己的。
 
