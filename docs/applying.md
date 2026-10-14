@@ -27,7 +27,7 @@ git apply $P/0005-nvrmfb-cursor-only.patch
 # 可选（修复 26 的内核部分：新显存抽样为零就不再 CPU 清零；内核扩展，在 0005 之后）：
 git apply $P/0006-nvrmfb-vram-noclear.patch
 ```
-**推荐：1.15.0**（插件 + 翻译器 + NVRMFB，含修复 26–30；作者现在用的就是这一套）：
+**推荐：1.15.0**（插件 + 翻译器 + NVRMFB，含修复 26–30、35；作者现在用的就是这一套）：
 ```bash
 git checkout v1.15.0
 P=/path/to/this-repo/patches/nullmoth-1.15.0
@@ -120,7 +120,7 @@ sudo zsh codec-vulkan/nvenc/uu-nvenc-t2d.sh install|restore
 sudo zsh codec-vulkan/vulkan/vk-devnull.sh install|restore
 ```
 `vk-bindfix.sh` / `mk-bindfix*.py` 是用 Python 重新推导补丁的版本（1.0.10 与 1.9.0 偏移不同）；`mk-bindfix-190.py` 对应 1.9.0 的 `libvulkan_nouveau.dylib`。
-用 1.14.2 补丁集的插件时，再用 `mk-nomem-190.py` 去掉 `hw.memsize` 改写（修复 27，插件和 NVK 要一起换）。**1.15.0 的原版 NVK 不需要任何补丁。**
+用 1.14.2 补丁集的插件时，再用 `mk-nomem-190.py` 去掉 `hw.memsize` 改写（修复 27，插件和 NVK 要一起换）。**1.15.0 的原版 NVK 不需要上面这些补丁**；可选的 ZCULL（修复 36）：`sudo zsh codec-vulkan/vulkan/vk-zcull.sh install`（从你装着的原版 `403d4d40` 生成，校验结果是 `c866c85d` 才安装，`restore` 恢复；`nvrm610.conf` 写 `ZCULL_RGN=0` 可临时关闭）。
 H.264 解码提速（修复 14）：`mk-detile8.py`、`mk-sleep.py` 生成补丁版，`sudo zsh codec-vulkan/nvdec/nvdec-sleep.sh` 安装（带 `restore`），`decbench.swift` 测速并逐比特比对。
 
 ## 8. 守护（可选）

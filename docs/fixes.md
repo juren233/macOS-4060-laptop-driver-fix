@@ -111,7 +111,7 @@
   1. **每帧新建 12 MB 暂存缓冲**：每个解码出的 NV12 帧都被包进新的 MTLTexture，插件的异步上传（第 4 项）每帧新建再释放 8 MB + 4 MB 暂存缓冲。
      改为按尺寸回收复用（`per-fix/surfin-stage-reuse.patch`）：4K 每帧主线程 CPU 约 10 → 2.8 ms（`hidpi/catest/upbench.m`），合成测试 200 条弹幕 86–92 → 165 fps、视频丢帧 15% → 0。
   2. **`waitUntilScheduled` 等到 GPU 完成**：第 6 项的闪烁修复把它改成了等完成，后来查明那次闪烁的真正原因是翻译器（第 9 项），
-     所以 `NVMTL_SCHEDULED_WAIT=0` 让它提交后就返回（**scheduled 回调仍在完成时触发**，那部分不能动，`NVMTL_SCHED_AT_COMPLETION=0` 会满屏闪）。
+     所以 `NVMTL_SCHEDULED_WAIT=0` 让它提交后就返回（**scheduled 回调仍在完成时触发**，那部分不能动：`NVMTL_SCHED_AT_COMPLETION=0` 在没有第 7 点时满屏闪；有了第 7 点不闪了，但实测更慢，见第八节（续））。
      真实 B 站 4K：128–160 → 165 fps，Chrome GPU 进程 CPU 约 116% → 34%。
   3. **提交被前一帧的发布挡住**：执行线程只在两次阻塞等待之间做“提前提交”，导致 Chrome 等的那帧要等上一帧 GPU 完成 + IOSurface 发布。
      改为提交时就在独立队列上做（`per-fix/eager-submit.patch`，`NVMTL_GSUB_EAGER=0` 关闭）：`schedlat` 2.5 → 0.01 ms；智能防挡下每 10 秒 >12 ms 的帧 132 → 6。
@@ -121,13 +121,18 @@
      - 内核：NVRMFB 给每块新显存先用 CPU 经 BAR 清零（约 2.5 ms / 7.6 MB）。RM 的 scrub-on-free 已经用拷贝引擎清过（抽查约 2.1 万次分配，非零 0 次），
        所以改为“抽样为零就不再清”（`patches/nullmoth-1.9.0/0006-nvrmfb-vram-noclear.patch`，1.15.0 版是 `patches/nullmoth-1.15.0/0003-nvrmfb-vram-noclear.patch`；`sysctl debug.nvrmfb_clear_mode`：0 原样、2 抽样为零即跳过=默认），弹幕时省约 10% 个核。
   6. `NVMTL_SURF_SHARE_MINPX=0`（所有窗口大小的 IOSurface 走共享显存）：智能防挡下 WindowServer CPU 80% → 55%，最长卡顿 42 → 18 ms；本机没有再出现第 3 项的黑块。
+  7. **第 2 点的副作用：跨进程读到上一帧**（1.15.0 补丁集里修复）。`waitUntilScheduled` 提交即返回后，生产者（如 Chrome GPU 进程）在 GPU 还在写的时候就把表面交了出去；
+     Apple GPU 上消费者的命令天然排在后面，这里每个进程是独立的 GPU 通道，私有图像的写入要到完成时才发布到表面页面 → 另一个进程读到上一帧（`hidpi/catest/gfx4.m` 10 次里 7 次有 1–55/60 帧错）。
+     修复：插件把每个表面“已编码/已发布的写入次数”写进 IOSurface 的值 `NVMTLWr:p<plane>`（任何进程立刻可见），读者在使用前等待别的进程尚未发布的写入
+     （双方都在共享显存时在提交前等，否则在 surface-in 处等；最多 200 ms，写者进程消失即停）（`patches/nullmoth-1.15.0/per-fix/xsurf-sync.patch`，`NVMTL_XSURF_SYNC=0` 关闭）。
+     `gfx4` 60/60 正确，平均等待约 2.5 ms（一帧生产者 GPU 时间）。
 - 当前 conf：`NVMTL_SCHEDULED_WAIT=0`、`NVRM_EVENT_WAIT=1`、`NVMTL_SURF_SHARE_MINPX=0`（`nvguard/` 会保持它们生效）。
 - **仍然存在的限制（不是驱动的问题）**：
   - 开智能防挡后，Chrome 把弹幕层做成每帧一个新 IOSurface 的 CALayer，**WindowServer 实际上屏帧数减半**：合成测试 200 条弹幕，不开遮罩上屏 145–155 fps，开遮罩 85–94 fps（Chrome 自己的 rAF 一直是 165）。
     换了三套驱动结果一样。Chrome 启动参数 `--disable-features=CoreAnimationRenderer` 能回到约 140 fps，但不开遮罩和滚动网页时 CPU 更高，是取舍而不是默认。
   - 同屏弹幕到 400–500 条时，瓶颈在 Chrome 自己（渲染进程排版 + 合成），驱动能做的有限；调低弹幕密度最有效。
 - 测试：`hidpi/catest/danmaku/`（`dm.html` 合成弹幕页 + 遮罩，`gen.swift` 生成 4K 测试视频，`tools/synthws.sh` / `biliws.sh` 同时记录 Chrome 帧率和 **WindowServer 实际上屏帧数** `wsframes.sh`），
-  `upbench.m`、`schedlat.m`、`chainstress.m`、`newsurf.m`、`rparktest.m`。
+  `upbench.m`、`schedlat.m`、`chainstress.m`、`newsurf.m`、`rparktest.m`、`gfx4.m`（跨进程，第 7 点）。
 
 ### 28. Unity 类程序卡死（在 `@synchronized(命令缓冲/队列)` 里提交并等待）
 - 现象：Unity 编辑器/游戏等程序偶发整个卡死。它们会在 `@synchronized(commandBuffer)` 或 `@synchronized(queue)` 里调用 `commit` + `waitUntilCompleted`，
@@ -195,6 +200,15 @@
 - ⚠ **这个修复第一次安装时让桌面崩溃循环**：cargo 直接编出来的 `libnvmtl_translate.dylib` **没有代码签名**。普通用户进程照样 `dlopen`（所以上面的测试都通过），但 WindowServer 是平台进程、带库验证，拒绝加载 → “AIR->SPIR-V translator is not loaded” → 管线状态为空 → `MetalShader::CopyPipelineState` 空指针崩溃，随后用户态看门狗 panic，开机停在 verbose 画面。**放进 `/Library/GPUBundles` 的每个 dylib/插件都必须先 `codesign -f -s -`（插件加 `-i com.nullmoth.NVMTLDriver`），并用 `hidpi/tests/lv-test.sh`（`codesign -o library` 的测试程序）复现 WindowServer 的加载条件再安装**；详见 [pitfalls.md](pitfalls.md)。
 - 回滚：`sudo zsh nvguard/install.sh previous`（把上一版重新登记为“好的构建”，守护进程随即把旧文件放回去，安全模式里也能用）。
 
+### 35. three.js 带阴影的 WebGL 页面打不开（Chrome “WebGL context lost”，GPU 进程重启）
+- 现象：three.js 的 3D 页面（例子：带阴影的国际象棋）一打开就 context lost，Chrome GPU 进程反复重启；关掉阴影就正常。
+- 根因：three.js 的阴影贴图是**只有一个元素的**采样器数组 `uniform sampler2D directionalShadowMap[1]`，并作为参数传给 `getShadow()`。ANGLE 发射成 `array<sampler, 1>` 入口参数，
+  第 25 项的数组降级只处理 2 个及以上元素，长度 1 的被当成普通采样器绑定 → ANGLE 存进 TextureEnv 结构体的参数指针变成 null，
+  helper 里的采样找不到采样器，翻译失败（“sampler operand is a pointer whose exact sampler state was not recovered”）。
+- 修复（翻译器）：长度 1 的 `array<sampler, 1>` 入口参数也按采样器数组绑定（`patches/nullmoth-1.15.0/per-fix/sampler1-threejs-shadow.patch`，已包含在 `0002` 里）。
+- 验证：`hidpi/catest/sarray1.m`（ANGLE 同款结构：单元素纹理/采样器数组经结构体指针传给不内联的 helper；nearest 取到 texel 0、linear 混合 0 和 1 才算 PASS）+ `sarray.m`；
+  本机 3008 个缓存着色器新旧对比，只有这一个变化（失败 → 能翻译）。
+
 ---
 
 ## 四、Chrome / Electron 的 GPU 合成
@@ -219,6 +233,21 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
   因此 NVK 不再需要我们的 `hw.memsize` 改写：`codec-vulkan/vulkan/mk-nomem-190.py` 把那段恢复成原样。**两者必须一起换**：旧插件配新 NVK，在 Chrome 沙箱里会拿不到设备（“Failed to query total system memory”）。
 - 1.15.0 起上游已包含这两处（原版插件 + 原版 NVK 即可，本仓库的 1.15.0 补丁集也保留着它们）。
 - 测试：`hidpi/catest/ffsandbox.m` 用 Firefox 的沙箱规则启动 Metal blit + CGL 清屏并回读（需要自己从 Firefox 源码导出 `SandboxPolicyGPU.h` 的规则存为 `ffsandbox-gpu.sb`，MPL 代码不随本仓库分发）。旧组合 0/2，新组合 2/2。
+
+---
+
+### 36. WebGL 3D 页面 GPU 慢：打开 ZCULL（层次 Z 剔除）
+- 现象：three.js 象棋页（3200×1594 画布、4x MSAA、阴影、8 盏灯、312 次绘制）只有 45–55 fps，GPU 每帧约 11.6 ms。
+- 根因：ANGLE 在非 Apple GPU 上的 MSAA WebGL 里，**每个片元着色器都写 `sample_mask`**。NVK 上写 sample mask（或 discard）的着色器没有提前深度测试，被挡住的片元也会被完整着色，
+  只能靠 ZCULL（层次 Z）在着色前剔除。Mesa 26 的 NVK 本来就有上游 zcull，但 NullMoth 的 NVRM 后端把 `has_zcull_info` 写死为 false，ZCULL 从来没开过。
+- 修复（NVK 二进制补丁，作用于所有 Metal 程序）：`codec-vulkan/vulkan/mk-zcull-115.py` 把那处赋值换成一段代码：用 `NV2080_CTRL_CMD_GR_GET_ZCULL_INFO` 向 RM 取信息并填好（RM 的参数恰好是 nouveau 那个结构的前 10 个字段）。
+  上下文的 zcull 缓冲后端本来就绑定了。在 `nvrm610.conf` 写 `ZCULL_RGN=0` 可关闭。
+  `sudo zsh codec-vulkan/vulkan/vk-zcull.sh install` 从你装着的原版 1.15.0 NVK（`403d4d40`）生成并安装（不分发二进制；以原文件名 ad-hoc 签名后与作者的构建 `c866c85d` 逐字节相同），`restore` 恢复。
+- 结果：`hidpi/catest/earlyz.m`（写 sample mask、被挡住的重着色器 pass）2.98 → 0.06 ms；象棋主 pass 4.4 → 2.4 ms，整帧 GPU 11.6 → 7.2 ms，页面约 65–74 fps。
+  `hidpi/catest/rtcheck.m`（MSAA 颜色/深度、resolve、跨 pass 读回、阴影比较采样、深度拷贝、模板）和全部回归测试新旧一致。
+- 限制：插件的深度图像带 `TRANSFER_DST`，NVK 不给它们单独的 zcull 平面，所以只在深度 `loadOp` 为 CLEAR 的 pass 里生效（这正是插件不读回深度时的默认）。
+- 还能做什么（未做，已存档）：MSAA 颜色/深度压缩。插件从不用 dedicated 分配，NVK 只压缩 dedicated 分配；小测试里 4x + D32S8 11.9 → 3.1 ms。
+  象棋这一帧在 Chrome GPU 进程里是串行的（等 GPU 约 9.5 ms + 编码约 3 ms），GPU 每省 1 ms 帧时间就少约 1 ms，估计 74 → 80–95 fps。但要走这个移植上没验证过的压缩内存路径，暂未做。
 
 ---
 
@@ -345,11 +374,25 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - **B 站“骨架屏”等待**：站点数据加载，不是 GPU。
 - **开机后的短暂卡顿（“等一会才流畅”）**：冷着色器缓存（以翻译器哈希为键），首次启动后自行恢复；曾因未持久化 `VkPipelineCache` 每次开机重编所有 NVK 着色器，已在 v47 修复（`pcache`）。
 
+## 八（续）、试过但没有收益（未采用）
+
+对象是“页面渲染了 N 帧，屏幕上只出现更少的帧”。**测量要看 WindowServer 实际上屏的帧数**（`hidpi/catest/danmaku/tools/wsframes.sh`，按 CoreDisplay 每次刷新的日志计数），不能只看 Chrome 的 rAF。
+- **WindowServer 的 CPU 不是瓶颈**：`sample` 主线程，空闲 77% / 46% / 28%（无页面 / 轻页面 / 象棋），整个进程 0.2–0.4 个核；每帧 CA 合成 1.8–3 ms CPU，等 GPU 完成 1.4–3.9 ms，导入新表面约 0.3 ms，都在 165 Hz 的 6 ms 预算内。
+- **WindowServer 翻转门控**（让 WS 的合成在提交后就返回，由内核在翻转前等写入完成）：做成了，但上屏帧数没有变化——瓶颈是多个进程在 GPU 上轮流使用时间片，而不是 WS 等待本身。
+  ⚠ 第一版在开门控后第一次翻转就 kernel panic：`IOSurface::copyValue` 无条件往最后一个参数写 seed，传了空指针。回滚。
+- **GPU 优先级**（RM 的 TSG interleave level / timeslice / GFXP 抢占）：合成测试里 WS 类负载延迟 4–7 → 1.2–1.8 ms，看起来很好；
+  真实 Chrome A/B 里 WS 上屏只多 4–9%（在 ±20% 噪声内），页面自身慢 9–20%。不值得。（RM 610 这些控制是 NON_PRIVILEGED，GSP 接受。）
+- **scheduled 回调改回“提交即触发”**（`NVMTL_SCHED_AT_COMPLETION=0`，有了第 26 项第 7 点之后重测）：轻页面上屏 126–150 → 96–143（噪声），象棋上屏 58–71 → **40–45**：
+  Chrome 不等了，变成 WindowServer 在跨进程同步里等 Chrome 的 GPU。保持“完成时触发”。偶发的“提交成对、WS 丢一帧”（轻页面 115–150 波动）就是这个等待在某些相位下造成的。
+- **GPU 频率**：不是问题。`hidpi/catest/rmclk.c`（只读 RM 客户端：当前 P-state + PMU 的频率采样）显示负载下 GPC 2580 MHz、显存 16 Gbps；`gpuclock.m` 实测 FP32 约 10 TFLOPS、显存拷贝 220 GB/s。
+  另外发现 GPU 空闲时也一直在 P0（2100 MHz），不会降频——影响的是空闲功耗/发热，不是流畅度，尚未处理。
+- 排查备忘：别在后台跑 `find /`——它会钻进 FSKit 挂载的 NTFS 分区，`UVFSService` 一跑就是一个核好几个小时，看起来像系统问题。
+
 ---
 
 ## 参考：内部版本演进（作者本机）
 
-插件版本链：v46 → v47（持久化 pipeline cache）→ v48（合入上游 1.9.0：采样器负 LOD、`shaderDrawParameters`、GL zero-net、翻译器的 base_vertex/base_instance；260/260 缓存着色器逐字节一致）→ tiled 渲染影子 → selffetch → gl-sample-positions → 合入 1.13.0（compute stage_in、Unknown 用途、采样器数组）→ 合入 1.14.2（`d8aa6e31`）→ 暂存缓冲复用（`ac789120`）→ 提前提交（`3108990a`）→ 渲染影子复用（`4eb05cf4`）→ 沙箱兜底 + Unity 锁（`dbbc77ec`）→ 单次绘制开销（`93c3be14`）→ 合入 1.15.0（`133fa823`）→ VideoToolbox 回归修正（`e8328b6a`）→ tiled 纹理 mip 链（`b4041b08`）；翻译器：`761a54b4`（顶点输出）→ `eb4fb6a3`（Lanczos）→ `50471f26`（1.13.0）→ `aa11ce8d`（采样器数组）→ `f62a16e5`（1.14.2）→ `2a3e7ea7`（地址表合并）→ `70c04748`（1.15.0）。NVK：`d94ea1a3`（bindfix）→ `19bbfc23`（去掉 `hw.memsize` 改写）→ `403d4d40`（1.15.0 原版，无补丁）。
+插件版本链：v46 → v47（持久化 pipeline cache）→ v48（合入上游 1.9.0：采样器负 LOD、`shaderDrawParameters`、GL zero-net、翻译器的 base_vertex/base_instance；260/260 缓存着色器逐字节一致）→ tiled 渲染影子 → selffetch → gl-sample-positions → 合入 1.13.0（compute stage_in、Unknown 用途、采样器数组）→ 合入 1.14.2（`d8aa6e31`）→ 暂存缓冲复用（`ac789120`）→ 提前提交（`3108990a`）→ 渲染影子复用（`4eb05cf4`）→ 沙箱兜底 + Unity 锁（`dbbc77ec`）→ 单次绘制开销（`93c3be14`）→ 合入 1.15.0（`133fa823`）→ VideoToolbox 回归修正（`e8328b6a`）→ tiled 纹理 mip 链（`b4041b08`）→ 跨进程 IOSurface 写入同步（`9952f874`）；翻译器：`761a54b4`（顶点输出）→ `eb4fb6a3`（Lanczos）→ `50471f26`（1.13.0）→ `aa11ce8d`（采样器数组）→ `f62a16e5`（1.14.2）→ `2a3e7ea7`（地址表合并）→ `70c04748`（1.15.0）→ `183ddb7c`（单元素采样器数组）。NVK：`d94ea1a3`（bindfix）→ `19bbfc23`（去掉 `hw.memsize` 改写）→ `403d4d40`（1.15.0 原版，无补丁）→ `c866c85d`（ZCULL）。
 内核扩展：1.0.10 → 1.9.0 + 本仓库补丁 → 1.15.0 + 本仓库补丁（NVRM `9794974b`、NVRMFB `79d60d24`）。
 `nvguard/` 里记录的哈希就是这些构建的 sha256（你自己的构建哈希不会相同）。
 
@@ -381,13 +424,13 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - 从上游 1.15.0 合入/取舍：插件拿了 IOSurface 页面的流式读取（1baebac：写合并页面上的窗口拷贝最多快 35 倍；也用在我们自己的异步上传路径上）和 `sysconf` 重绑的边界检查（b25058b）；
   **没拿** bee05d1 的插件部分（每表面监视器、写映射、IOSurface 纹理缓存：v47 起同一表面已共享一个私有图像，而它会在每次 draw 的路径上多一把全局锁）。
   翻译器拿了“绑定采样器的 kernel 保留 threadgroup 内存长度”（2009ced：VideoToolbox 缩放输出整列为零 = “照片”里的绿线）和“缓冲类型重映射后保留阶段输出”（4b0a8c7，与第 9 项的 `type_def_of` 兜底合并）。
-- NVK：1.15.0 原版 `libvulkan_nouveau.dylib` **不再需要我们的任何补丁**（第 5、27 项）。
+- NVK：1.15.0 原版 `libvulkan_nouveau.dylib` 不再需要第 5、27 项的补丁；唯一的改动是可选的 ZCULL（第 36 项，`codec-vulkan/vulkan/vk-zcull.sh`）。
 - 内核扩展：NVRM = 1.15.0 + `kexts/patch-nvrm-115.py`（head-scaler + 启动即翻转，改动与 1.9.0 相同，代码后移 0x1590）；NVRMFB = 1.15.0 源码 + `0003`（`kexts/build-fb-115.sh`）；NVAccel、NVRMAGDC 用原版。
   上游 1.15.0 自带背光（第 17 项）和“光标只提交光标”（第 21 项），1.9.0 的 `0004`、`0005` 不再需要；另外上游修了 512 个 `nvSVPend` 槽位的泄漏（79e1c2f）。
   安装：`kexts/install-kexts-115.sh`（在 macOS 15 上；`--check` 只建测试内核集合，带备份，`rollback-kexts-115.sh` 回滚；脚本里的哈希是作者的构建，换成你的）。
   装后核对：165 Hz、1792×1008 HiDPI、亮度键与滑块、零拷贝翻转（`flip=1`）都在，`debug.nvrmfb_clear_skipped` 在增长。
 - 1.15.0 是上游“最后一个支持 macOS 15 的版本”，安装包里同时带了 macOS 26 用的 NVAccel（`/Library/NullMoth/kexts/26`），升级到 26 见第十一节。
-- 1.15.0 之后的本地修复：第 29 项的 VideoToolbox 回归修正、第 30 项。`per-fix/` 是各自的单独提交，依赖前面的本地修改，请直接用 `0001`。
+- 1.15.0 之后的本地修复：第 29 项的 VideoToolbox 回归修正、第 30 项、第 26 项第 7 点（跨进程写入同步，`per-fix/xsurf-sync.patch`）、第 35 项（`per-fix/sampler1-threejs-shadow.patch`）。`per-fix/` 是各自的单独提交，依赖前面的本地修改，请直接用 `0001`/`0002`。
 
 ## 十、ESP 守护（efiguard）
 

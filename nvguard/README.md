@@ -6,8 +6,8 @@
 
 - `install.sh`：登记“好的构建”的哈希（`GOOD_*`）、可被替换的旧/原版哈希（`OLD_*`、`STOCK_*`），把快照放进 `/Library/NullMoth/guard`（`chflags schg` + MANIFEST），安装 LaunchDaemon `local.nvguard`。
 - `nvguard.sh`：开机和被守护目录变化时运行；若线上文件是**已知的可替换构建**，就用快照覆盖（新 inode，不原地写）；未知构建不动；并保证 `nvrm610.conf` 里的必需旋钮**生效**（插件和 NVK 只认同一个键的第一行，所以会删掉该键的旧行再写入，改前留备份）。
-- 回滚：`install.sh previous` / `vtfix133` / `drawcost` / `sbfd` / `sampler` 把更早的构建登记为“好的构建”，守护随即放回旧文件（安全模式里也能用）；不带参数重跑就回到最新。
-  现在登记的是 1.15.0 补丁集的构建（插件 `b4041b08`、翻译器 `70c04748`、1.15.0 原版 NVK `403d4d40`）；1.15.0 原版插件/翻译器被列为“可替换”，NullMoth 自己更新驱动后守护会把我们的放回去。
+- 回滚：`install.sh previous` / `sampler1prev` / `tiledprev` / `vtfix133` / `drawcost` / `sbfd` / `sampler` 把更早的构建登记为“好的构建”，守护随即放回旧文件（安全模式里也能用）；不带参数重跑就回到最新。
+  现在登记的是 1.15.0 补丁集的构建（插件 `9952f874`、翻译器 `183ddb7c`、ZCULL 版 NVK `c866c85d`；`install.sh previous` 回到插件 `b4041b08` + 原版 NVK `403d4d40`）；1.15.0 原版插件/翻译器被列为“可替换”，NullMoth 自己更新驱动后守护会把我们的放回去。
 - `verify.sh`：无需 sudo 的只读体检（哈希、conf、LaunchDaemon、git 状态、最新 EFI 备份）。
 
 移植要改的：`install.sh` 顶部的各个哈希与源路径、`verify.sh` 里的目录。脚本里的 `~/work/…` 是作者本机路径。
