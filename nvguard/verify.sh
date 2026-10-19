@@ -13,7 +13,8 @@ chk "Metal plugin NVMTLDriver      " "$(sha $M/NVMTLDriver)"            "$(want 
 chk "shader translator             " "$(sha $M/libnvmtl_translate.dylib)" "$(want GOOD_XLATE)"
 chk "Vulkan driver (bindfix)       " "$(sha $B/nvmtl/libvulkan_nouveau.dylib)" "$(want GOOD_VK)"
 chk "H.264 decoder (NVDEC t2d)     " "$(sha $M/libnvdec_h264.dylib)" "1b5d08ba7cb95804e076d0be30c994bc15121ec4c4345f587dc45e34adffe1bf"
-chk "H.264 decoder (t2d, 8-byte)  " "$(sha $M/libnvdec_h264_t2d.dylib)" "$(sed -n 's/^T2D_SRC=.*T2D_SHA=\([0-9a-f]\{64\}\).*/\1/p' $inst | head -1)"
+chk "H.264 decoder (t2d, 8-byte)  " "$(sha $M/libnvdec_h264_t2d.dylib)" "$(sed -n 's/.*T2D_SHA=\([0-9a-f]\{64\}\).*/\1/p' $inst | head -1)"
+chk "HEVC decoder (2.3.7)          " "$(sha $M/libnvdec_hevc.dylib)" "$(sed -n 's/.*HEVC_SHA=\([0-9a-f]\{64\}\).*/\1/p' $inst | head -1)"
 chk "H.264 encoder (NVENC)         " "$(sha $M/libnvenc_h264.dylib)" "2b231d508b2d886afb8de51b950071b905fbd23d88c635bfda968a0855d28231"
 echo "== nvrm610.conf knobs (the plugin and NVK use the FIRST line of a key; nvguard keeps these in effect)"
 CF=$B/nvmtl/nvrm610.conf
@@ -21,7 +22,7 @@ while read -r line; do [[ $line == *=* ]] || continue; k=${line%%=*}
   eff=$(awk -v k="$k" '{ l = $0; sub(/^[ \t]+/, "", l); if (l ~ /^#/) next; i = index(l, "="); if (!i) next; key = substr(l, 1, i - 1); sub(/[ \t]+$/, "", key)
     if (key != k) next; v = substr(l, i + 1); sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v); print key "=" v; exit }' $CF 2>/dev/null)
   chk "conf ${(r:30:)line}" "${eff:-unset}" "$line"
-done < <(sed -n "s/^printf '%s\\\\n' \(.*\) > \$G\/conf.txt$/\1/p" $inst | tr ' ' '\n')
+done < <(sed -n "s/^printf '%s\\\\n' \(.*\) > \$G\/conf.txt$/\1/p" $inst | sed "s/\\\$RES2_WS/$(sed -n 's/^RES2_WS=\([0-9]\)$/\1/p' $inst | head -1)/" | tr ' ' '\n')   # $RES2_WS: install.sh's default
 echo "== guard"
 [[ -f /Library/LaunchDaemons/local.nvguard.plist ]] && { print "  OK     guard daemon installed"; ok=$((ok+1)); } || { print "  MISSING guard daemon plist"; bad=$((bad+1)); }
 if [[ -f $G/MANIFEST.sha256 ]]; then ( cd $G && shasum -a 256 -c MANIFEST.sha256 >/dev/null 2>&1 ) && { print "  OK     guard snapshot intact"; ok=$((ok+1)); } || { print "  CHANGED guard snapshot does not match its MANIFEST"; bad=$((bad+1)); }
@@ -29,10 +30,18 @@ else print "  (no MANIFEST yet - re-run install.sh once)"; fi
 print "  last guard log lines:"; tail -3 /var/log/nvguard.log 2>/dev/null | sed 's/^/    /'
 echo "== EFI guard (AppleALC, Wi-Fi/BT, touchpad kexts on the ESP; repaired automatically at boot and every 6 h)"
 EG=/Library/NullMoth/efiguard
-[[ -f /Library/LaunchDaemons/local.efiguard.plist ]] && { print "  OK     efiguard daemon installed"; ok=$((ok+1)); } || { print "  MISSING efiguard daemon - run efiguard/install.sh (see efiguard/README.md)"; bad=$((bad+1)); }
+[[ -f /Library/LaunchDaemons/local.efiguard.plist ]] && { print "  OK     efiguard daemon installed"; ok=$((ok+1)); } || { print "  MISSING efiguard daemon - run: sudo zsh ~/work/system/efiguard/install.sh"; bad=$((bad+1)); }
 if [[ -f $EG/manifest.txt ]]; then print "  OK     ESP snapshot: $(wc -l < $EG/manifest.txt | tr -d ' ') files, $(wc -l < $EG/required-kexts.txt | tr -d ' ') required kexts"; ok=$((ok+1)); else print "  MISSING ESP snapshot"; bad=$((bad+1)); fi
 el=$(tail -1 /var/log/efiguard.log 2>/dev/null); print "  last efiguard log line: ${el:-none yet}"
 [[ $el == *ATTENTION* ]] && { print "  ATTENTION efiguard reports a problem on the ESP (see /var/log/efiguard.log); after a deliberate EFI change re-run efiguard/install.sh"; bad=$((bad+1)); }
+echo "== system sleep (sleepguard: sleep only while NVRM can suspend/resume the GPU)"
+SG=/Library/NullMoth/sleepguard; sw=$(cat $SG/want 2>/dev/null); pm=$(ioreg -r -c NVRM -d1 -l 2>/dev/null | awk -F'"' '/"nvrm-pm"/{print $4; exit}')
+sd=$(pmset -g 2>/dev/null | awk '/SleepDisabled/{print $2}'); hm=$(pmset -g custom 2>/dev/null | awk '$1=="hibernatemode"{printf "%s ", $2}')
+if [[ -f /Library/LaunchDaemons/local.sleepguard.plist ]]; then print "  OK     sleepguard installed (wanted: ${sw:-?})"; ok=$((ok+1)); else print "  MISSING sleepguard - run: sudo zsh ~/work/system/sleepguard/install.sh on|off"; bad=$((bad+1)); fi
+if [[ $sd == 0 && $pm != running ]]; then print "  DANGER sleep is allowed but NVRM nvrm-pm is '${pm:-absent}': a sleep would lose the GPU (black screen)"; bad=$((bad+1))
+elif [[ $sw == on && $pm == running && $sd != 0 ]]; then print "  CHANGED sleep wanted and NVRM running, but SleepDisabled is ${sd:-?} (tail /var/log/sleepguard.log)"; bad=$((bad+1))
+else print "  OK     SleepDisabled ${sd:-?}, NVRM nvrm-pm ${pm:-absent}"; ok=$((ok+1)); fi
+[[ $sd == 0 && $hm != "0 0 " ]] && { print "  CHANGED hibernatemode is ${hm}(want 0 0: hibernation is untested with the GPU)"; bad=$((bad+1)); }
 echo "== kernel side"
 for k in com.nullmoth.NVRM com.nullmoth.NVAccel com.nullmoth.NVRMFB com.nullmoth.NVRMAGDC local.juren.NVDSM local.juren.BTLEFix org.b00t0x.CpuTopologyRebuild as.vit9696.Lilu as.vit9696.AppleALC; do
   if kmutil showloaded --list-only 2>/dev/null | grep -q " $k "; then print "  OK     $k loaded"; ok=$((ok+1)); else print "  NOT LOADED $k"; bad=$((bad+1)); fi; done
