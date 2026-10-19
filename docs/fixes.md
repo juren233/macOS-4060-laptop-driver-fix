@@ -334,6 +334,12 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
   6. `wifibt/IntelBTProductName/`（无代码 kext，经 AppleUSBHostMergeProperties 把 USB 产品名合并为 `Intel Wireless Bluetooth`）：让 bluetoothd 把 Intel 控制器当作**外置 dongle** 而非内置（内置模式会跑 Broadcom 的 VSC 初始化而失败，STATUS 712）。
 - ⚠ BTLEFix v2 曾因为在 `IOUSBHostPipe::io` 的**完成回调**里读传输缓冲区导致 `IOGMD: not wired for the IODMACommand` panic。教训：永远不要在完成回调里碰 USB 传输的描述符，也不要 hook 所有 USB I/O；v3 起只 hook `idVendor 0x8087` 的 `deviceRequest`。
 - `-btlefixoff` boot-arg 可停用 BTLEFix。
+- **bluetoothd 崩溃循环（BTLEFix 1.0.8 修好）**：蓝牙突然“关闭、打不开”，`system_profiler` 里 Address 为 NULL，内核日志里每约 10 秒一次 `apfs_pagein_with_verification: Cannot read data for compressed inode … Bad message(94)` 然后 `crashed: bluetoothd`，直到 launchd 放弃。
+  根因：BlueToolFixup 和 BTLEFix 都钩 `_cs_validate_page`，**直接改写 `/usr/sbin/bluetoothd` 在统一缓存（UBC）里的页**。内存压力大（压缩器 ~10 GB、120 万次 swapout）时被改过的页被换出，APFS 密封卷重新读入压缩数据时校验失败（失败的 16 KB 块正好是补丁所在的块）；
+  `codesign --verify /usr/sbin/bluetoothd` 也会报“invalid signature”，其它系统二进制都正常。
+  修复（`wifibt/BTLEFix/`，设计见 `PLAN-private-patch.md`）：BTLEFix 1.0.8 在 `task_set_main_thread_qos` 之后对 bluetoothd / BlueTool 进程做**私有写时复制补丁**，文件页保持原样；BlueToolFixup 的补丁也搬进来，BlueToolFixup 用 boot-arg `-btlfxoff` 关掉（`efiguard` 把它列为必需 boot-arg）。
+  验证：`debug.btlefix_cow` 显示 `code 6/6 patched … 0 failed`；`codesign --verify` 通过；`stress-v6.sh` 连续 10 次重启 bluetoothd 都是 6/6、无 `apfs_pagein` 错误；一次定时睡眠后蓝牙正常。
+  安装 `sudo bash wifibt/BTLEFix/install-v6.sh`（先备份、改 ESP 的 boot-args 并重启），检查 `check-v6.sh`，回滚 `rollback-v6.sh`。pattern 随 macOS 版本变，`verify_private_patch.py` 可离线核对。BTLEFix 的 `candidateProcess()` 要精确匹配进程名，前缀匹配会误伤 `bluetoothuserd`。
 - **macOS 26**：Wi-Fi 用 AirportItlwm 的 Tahoe 构建（同一份 laobamac `d695c97` + 下面的初始化自愈补丁，按 Tahoe 方案编译），作为 `config.plist` 里的第二个条目（`MinKernel 25.0.0`；Sequoia 条目 `MaxKernel 24.99.99`），
   OpenCore 按内核版本注入对应的那个（`tahoe/prep-efi-26.sh`）。蓝牙：26 的 bluetoothd 是同一段代码，只是第一个位移从 0x49 变成 0x69，BTLEFix 1.0.6 两种都打。
   BTLEFix / NVDSM 的 Lilu 最高内核版本要放到 Tahoe，否则 Lilu 在 26 上直接跳过它们。BTLEFix 1.0.6 还兼做 macOS 26 声卡的资源请求应答（第 33 项）。

@@ -43,7 +43,7 @@ i=0; while b=$($PB -c "Print :Kernel:Add:$i:BundlePath" $C 2>/dev/null); do
 # required boot-args: the ones that carry our fixes (only those present right now); a trailing = means "any value"
 cur=$($PB -c "Print :NVRAM:Add:7C436110-AB2A-4BBB-A880-FE41995C9F82:boot-args" $C)
 # nvfbhidpi=1 / -nvrmnopm / nvrmmapowner=0: NullMoth 2.3.7 kernel (HiDPI modes, NVRM stays out of the power tree, map-owner count-only)
-for tok in nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth ipc_control_port_options=0 itlwm_he=1 -btlfxboardid amfi=0x80 amfi_get_out_of_my_way=0x1 alcid= -no_compat_check revpatch= nvfbhidpi=1 -nvrmnopm nvrmmapowner=0; do
+for tok in nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth ipc_control_port_options=0 itlwm_he=1 -btlfxboardid -btlfxoff amfi=0x80 amfi_get_out_of_my_way=0x1 alcid= -no_compat_check revpatch= nvfbhidpi=1 -nvrmnopm nvrmmapowner=0; do
   if [[ $tok == *= && $tok != *=?* ]]; then [[ " $cur " == *" $tok"* ]] && print -r -- $tok
   else [[ " $cur " == *" $tok "* ]] && print -r -- $tok; fi
 done > $G/required-bootargs.txt
