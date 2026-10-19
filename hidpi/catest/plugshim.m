@@ -11,7 +11,9 @@
 __attribute__((ns_returns_retained)) static id<MTLDevice> shim_create(void) {
     static id<MTLDevice> dev; static dispatch_once_t once;
     dispatch_once(&once, ^{
-        const char *p = getenv("NVMTL_TEST_PLUGIN");
+        // SHIM_PLUGIN too: a release plugin scrubs NVMTL_* from the environment, so a child the test spawns (gfx4's producer)
+        // would lose NVMTL_TEST_PLUGIN and fall back to the installed build
+        const char *p = getenv("NVMTL_TEST_PLUGIN"); if (!p) p = getenv("SHIM_PLUGIN");
         if (!p || !dlopen(p, RTLD_NOW)) { fprintf(stderr, "plugshim: dlopen %s: %s\n", p ? p : "(unset)", dlerror()); exit(3); }
         io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOAccelerator"));
         dev = ((id (*)(id, SEL, mach_port_t))objc_msgSend)([objc_getClass("NVMTLDevice") alloc], sel_registerName("initWithAcceleratorPort:"), svc);

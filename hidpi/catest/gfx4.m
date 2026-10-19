@@ -1,3 +1,4 @@
+#include <signal.h>
 // gfx4 (two processes): a compositor-style buffer queue. N IOSurfaces rotate; each frame a NEW texture is made on the next surface, the
 // previous surface is sampled to copy its contents, then a few damage rects are drawn. A CPU model checks every few frames.
 #import <Foundation/Foundation.h>
@@ -58,6 +59,7 @@ static int producer(int W, int H, int nbuf, int frames) {
     return 0;
 }
 static int consumer(const char *self, int W, int H, int nbuf, int frames, const char *label) {
+    signal(SIGPIPE, SIG_IGN);   // the producer may exit as soon as it handed over its last frame
     initdev(); int po[2], pi[2]; pipe(po); pipe(pi);
     posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa); posix_spawn_file_actions_adddup2(&fa, po[1], 1); posix_spawn_file_actions_adddup2(&fa, pi[0], 0);
     posix_spawn_file_actions_addclose(&fa, po[0]); posix_spawn_file_actions_addclose(&fa, pi[1]);
@@ -68,7 +70,7 @@ static int consumer(const char *self, int W, int H, int nbuf, int frames, const 
         model[i] = malloc((size_t)W * H * 4); for (size_t k = 0; k < (size_t)W * H; k++) model[i][k] = 0xFF000000u; }
     id<MTLBuffer> rb = [dev newBufferWithLength:(size_t)W * H * 4 options:MTLResourceStorageModeShared]; uint32_t s = 777; int bad = 0, n = 0; long worst = 0;
     while (fgets(line, sizeof line, in)) {
-        int f, b; if (sscanf(line, "F %d %d", &f, &b) != 2) continue;
+        int f, b; if (sscanf(line, "F %d %d", &f, &b) != 2) { if (getenv("GFX_V")) printf("   unparsed producer line: %.60s\n", line); continue; }
         DRect rc[3]; int k = rects(&s, W, H, rc); int pv = (f + nbuf - 1) % nbuf; if (f) memcpy(model[b], model[pv], (size_t)W * H * 4); else for (size_t i = 0; i < (size_t)W * H; i++) model[b][i] = 0xFF000000u;
         for (int i = 0; i < k; i++) apply(model[b], W, &rc[i]);
         id<MTLTexture> rd = tex(sf[b], W, H, MTLTextureUsageShaderRead); id<MTLCommandBuffer> c2 = [q commandBuffer]; id<MTLBlitCommandEncoder> bl = [c2 blitCommandEncoder];
@@ -76,9 +78,12 @@ static int consumer(const char *self, int W, int H, int nbuf, int frames, const 
         [bl endEncoding]; [c2 commit]; [c2 waitUntilCompleted];
         const uint32_t *got = rb.contents; long diff = 0; for (size_t i = 0; i < (size_t)W * H; i++) if (got[i] != model[b][i]) diff++;
         n++; if (diff) { bad++; if (diff > worst) worst = diff; if (getenv("GFX_V")) printf("   frame %d buf %d: %ld px differ\n", f, b, diff); }
-        if (write(pi[1], "ok\n", 3) < 0) break;
+        // A credit lets the producer start frame f + nbuf - 1; none is owed after that frame would be the last. A failed write
+        // (the producer already gone) must not end the loop either: its last frames are still in the pipe.
+        if (f + nbuf <= frames) (void)!write(pi[1], "ok\n", 3);
     }
-    int st; waitpid(pid, &st, 0);
+    int st = 0; waitpid(pid, &st, 0);
+    if (n < frames) printf("   producer delivered %d of %d frames: %s %d\n", n, frames, WIFSIGNALED(st) ? "killed by signal" : "exit status", WIFSIGNALED(st) ? WTERMSIG(st) : WEXITSTATUS(st));
     printf("%-34s %dx%d x%d bufs, %d frames: consumer saw %d/%d frames WRONG%s\n", label, W, H, nbuf, frames, bad, n, bad ? "  <==" : "");
     return bad != 0 || n < frames;
 }
