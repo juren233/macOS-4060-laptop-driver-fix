@@ -3,11 +3,11 @@
 [简体中文](README.md)
 
 A collection of patches, byte-patch scripts and root-cause write-ups for running the
-[NullMoth NVIDIA driver](https://github.com/nullmoth/nvidia-macos-driver) (the author now runs v1.15.0 kexts and user space) on a **Hackintosh (OpenCore) with macOS 15.8.1 — now upgraded to macOS 26.7.1 —
+[NullMoth NVIDIA driver](https://github.com/nullmoth/nvidia-macos-driver) (the author now runs v2.3.7 kexts and a user space based on v2.0.4 with selected 2.3.x changes) on a **Hackintosh (OpenCore) with macOS 15.8.1 — now upgraded to macOS 26.7.1 —
 and an RTX 4060 Laptop dGPU** (Clevo chassis, i7-13620H, BOE 0B40 2560×1440@165 Hz panel, Intel AX211, ELAN0420 I²C touchpad, ALC256 audio).
 
 **Not included:** any NullMoth/NVIDIA binary or firmware, your EFI / `config.plist`, ACPI dumps. Get the driver from upstream.
-What *is* included: source diffs against upstream v1.9.0, v1.13.0, v1.14.2 and v1.15.0, the macOS 26 upgrade kit (`tahoe/`), assertion-based binary patch scripts, kext/Lilu sources, install/rollback
+What *is* included: source diffs against upstream v1.9.0, v1.13.0, v1.14.2, v1.15.0 and v2.0.4/v2.3.7, the macOS 26 upgrade kit (`tahoe/`), assertion-based binary patch scripts, kext/Lilu sources, install/rollback
 scripts, regression test programs, and the analysis behind each fix.
 
 > ⚠️ This modifies kernel extensions, system GPU plugins, OpenCore config and ACPI. Back up your EFI and keep a bootable fallback.
@@ -16,14 +16,15 @@ scripts, regression test programs, and the analysis behind each fix.
 
 ## Versions and applicability
 
-**The author's machine now:** macOS **26.7.1** (upgraded from 15.8.1, SMBIOS still iMacPro1,1) + NullMoth **v1.15.0** kexts and user space + this repo's 1.15.0 patch set.
+**The author's machine now:** macOS **26.7.1** (upgraded from 15.8.1, SMBIOS still iMacPro1,1) + NullMoth **v2.3.7** kexts + user space based on **v2.0.4 with selected 2.3.x changes** + this repo's 2.3.7 patch set.
+The 1.15.0 set (`patches/nullmoth-1.15.0/`) is still valid and is the last one that supports macOS 15.
 The older combination (v1.9.0 kexts + v1.9.0 / v1.13.0 / v1.14.2 user-space patches on macOS 15) is kept in its directories.
 
 | Layer | Which version | Notes |
 |---|---|---|
-| Plugin NVMTLDriver, translator | `patches/nullmoth-1.15.0/0001`, `0002` (recommended); older `nullmoth-1.14.2/`, `nullmoth-1.13.0/`, `nullmoth-1.9.0/0001`, `0002` | Pick one set, do not stack. Fixes 26–29 are in 1.14.2 and later; the VideoToolbox fix to 29, fix 30, fix 35 and 26's cross-process sync only in 1.15.0 |
-| Kexts NVRM/NVAccel/NVRMFB | **1.15.0**: NVRM via `kexts/patch-nvrm-115.py`, NVRMFB via `patches/nullmoth-1.15.0/0003`, stock NVAccel/NVRMAGDC; old 1.9.0 baseline: `patches/nullmoth-1.9.0/0003–0006` | 1.15.0 ships its own backlight and cursor-only commits (NVRMFB part of 17, 21); binary patches assert every byte |
-| NVK (`libvulkan_nouveau`) | Stock 1.15.0; optional `codec-vulkan/vulkan/vk-zcull.sh` (ZCULL, fix 36); 1.9.0: `codec-vulkan/vulkan/` | NVK parts of 5 and 27 are upstream now |
+| Plugin NVMTLDriver, translator | `patches/nullmoth-2.3.7/0001`, `0002` (**apply to upstream v2.0.4**; current); `patches/nullmoth-1.15.0/0001`, `0002` (on v1.15.0, macOS 15); older `nullmoth-1.14.2/`, `nullmoth-1.13.0/`, `nullmoth-1.9.0/0001`, `0002` | Pick one set, do not stack. Fixes 26–29 are in 1.14.2 and later; the VideoToolbox fix to 29, fix 30, fix 35 and 26's cross-process sync are in 1.15.0; 38–40 only in the 2.3.7 set |
+| Kexts NVRM/NVAccel/NVRMFB | **2.3.7** (macOS 26): NVRM via `kexts/patch-nvrm-237.py`, NVRMFB via `patches/nullmoth-2.3.7/0003`, stock NVAccel (26 build)/NVRMAGDC, install with `kexts/install-kexts-237.sh`; system sleep works (fix 37). **1.15.0**: NVRM via `kexts/patch-nvrm-115.py`, NVRMFB via `patches/nullmoth-1.15.0/0003`, stock NVAccel/NVRMAGDC; old 1.9.0 baseline: `patches/nullmoth-1.9.0/0003–0006` | 1.15.0 ships its own backlight and cursor-only commits (NVRMFB part of 17, 21); binary patches assert every byte |
+| NVK (`libvulkan_nouveau`) | Stock 1.15.0; optional `codec-vulkan/vulkan/vk-zcull.sh` (ZCULL, fix 36; for 2.0.4 / 2.0.5 use `mk-zcull-204.py` / `mk-zcull-236.py`); 1.9.0: `codec-vulkan/vulkan/` | NVK parts of 5 and 27 are upstream now |
 | NVDEC / NVENC byte patches | Against 1.9.0 binaries (the author still uses these patched builds with 1.15.0) | Scripts assert the expected bytes and refuse to write on mismatch |
 | macOS 26 | `tahoe/` | Upgrade, rescue, audio, AC power: fixes 32–34 |
 
@@ -31,11 +32,12 @@ The older combination (v1.9.0 kexts + v1.9.0 / v1.13.0 / v1.14.2 user-space patc
 
 | Your situation | Applicable fixes |
 |---|---|
-| Any NullMoth-supported NVIDIA GPU on macOS 15 / 26 (user space, hardware independent) | 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 16, 22, 23, 25, 26 (plugin part), 27, 28, 29, 30, 35 |
+| Any NullMoth-supported NVIDIA GPU on macOS 15 / 26 (user space, hardware independent) | 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 16, 22, 23, 25, 26 (plugin part), 27, 28, 29, 30, 35, 38, 39, 40 |
 | macOS issues unrelated to the driver | 20 (CrossOver/Wine), 31 (WeType input method) |
 | Needs a specific NullMoth build (byte patches / offsets are version bound) | 2, 5 (NVK part), 14, 15, 27 (NVK part), 36 (1.15.0 NVK) |
 | Ada (RTX 40) only: NVDEC/NVENC t2d layout | 14, 15 |
 | Depends on your panel and mainboard | 1 (HiDPI: panel ID, refresh rate), 17 (brightness: `_DSM`/`_DOD` paths in your DSDT) |
+| Needs the 2.3.7 kernel | 37 (system sleep), 40 (kernel side of the marks) |
 | Same hardware only | 18 (Intel AX211), 19 (ELAN0420 I²C touchpad), 24 (ALC256 codec; the layout depends on the machine) |
 | Upgrading to macOS 26 | 32 (dropped models like iMacPro1,1 + a patched driver), 33 (codecs that need AppleHDA), 34 (DSDT `_PSR` relying on Windows-only methods) |
 | Kext, higher risk | 21 (cursor-only commits, preventive; built into 1.15.0), NVRMFB part of 26 (no CPU clear of fresh VRAM) |
@@ -82,8 +84,14 @@ Suggested order: user-space first (plugin, translator) and live with it; then by
 | 34 | macOS 26 says battery power while plugged in; FileVault conversion stays paused | DSDT `AC._PSR` calls Windows-only methods and fails under macOS; APFS pauses conversion on battery | `SSDT-ACPSR` with its own `_PSR` (returns `ACFG`) + ACPI rename `_PSR → XPSR` — `tahoe/power/` |
 | 35 | three.js WebGL pages with shadows lose the context (Chrome GPU process restarts) | Shadow maps are a ONE-element sampler array `sampler2D shadowMap[1]`; the translator only lowered arrays of 2+, so the length-1 sampler pointer was lost | Translator binds `array<sampler, 1>` as a sampler array too — `patches/nullmoth-1.15.0/per-fix/sampler1-threejs-shadow.patch`, `hidpi/catest/sarray1.m` |
 | 36 | WebGL 3D pages (three.js chess) GPU-slow | Every ANGLE MSAA fragment shader writes `sample_mask` → no early depth test; NullMoth's NVRM backend hard-disabled NVK's ZCULL | NVK binary patch: fill the ZCULL info from RM and turn it on (chess frame GPU 11.6 → 7.2 ms) — `codec-vulkan/vulkan/{mk-zcull-115.py,vk-zcull.sh}`, `hidpi/catest/{earlyz,rtcheck}.m` |
+| 37 | Screen stays dark after lid-close / Apple-menu sleep (older kernels) | NVRM up to 1.15.0 has no GPU suspend/resume; 2.3.7 has it but `-nvrmnopm` turns it off | Drop `-nvrmnopm`; `sleepguard` allows sleep only while the GPU can resume; single timed-wake test script (RM standby 6.1 s, resume 4.5 s, VRAM kept) | `kexts/sleep/`, `sleepguard/` |
+| 38 | System windows/icons render slowly; Core Animation falls back to its generic path; icon glyphs all black (intermediate build) | Core Animation's uber-shader function-constant struct reads never folded, so every "specialized" variant was the whole 684 KB (~3.3 s); wrong error wording for `[[visible]]` references made RenderBox return nil | **Translator** folds those aggregate field reads (3.3 → ~0.5 s); fixed "visible function reference" wording | `patches/nullmoth-2.3.7/0002`, `hidpi/catest/fcbench/`, `iconfc.m` |
+| 39 | Apple OpenGL apps hang / windowed GL drops frames / integer textures read as float | IOSurface use count held only from encode; vsync wait ended at vblank, not when WindowServer took the previous frame; reflection called every texture Float | Hold the use count until completion; wait until the window server took the frame; reflect Int/UInt from `texture_shape` | `patches/nullmoth-2.3.7/0001`, `hidpi/catest/gl236/` |
+| 40 | Black screenshots, blank Dock thumbnails, black lock screen | WindowServer's composite is still on the GPU when a capture locks the surface and reads the old frame | Plugin marks surfaces pending at commit and ready after the last writer, shared VRAM newest at commit (with the 2.3.7 NVAccel) | `patches/nullmoth-2.3.7/0001`, `hidpi/catest/wsmark.m` |
 
 Details (Chinese): [docs/fixes.md](docs/fixes.md) · Pitfalls: [docs/pitfalls.md](docs/pitfalls.md).
+
+Sleep: `sleepguard/` keeps system sleep allowed only while NVRM reports `nvrm-pm = running` (2.3.7 kernel without `-nvrmnopm`).
 
 Guards: `nvguard/` keeps the driver files patched after a NullMoth reinstall; `efiguard/` keeps the fixes that live on the OpenCore ESP (kexts, `alcid`, boot-args incl. the macOS 26 ones), finds the ESP by partition UUID, stays out while the rescue config is active, and can be rehearsed on a copy of the ESP. A Photo Booth preview that is *upside down* while FaceTime/QuickTime are fine is not a driver bug — see docs/fixes.md ("excluded" section). Experiments that did NOT help on-screen smoothness (WindowServer flip gate, GPU priority/GFXP, scheduled handlers at submission) and the measurements behind them are in the section after it.
 

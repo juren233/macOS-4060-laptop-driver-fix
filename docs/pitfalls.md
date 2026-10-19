@@ -10,8 +10,8 @@
 - 一次性测试**别用 `nvram boot-args=…`**：OpenCore 会按 ESP 配置重写，重启就没了；改 ESP 里的 `config.plist`（`wifibt/oc-bootarg.sh`）。
 - 插件旋钮只能写 `nvrm610.conf`：发行版插件在启动时 `unsetenv` 所有 `NVMTL_*` 变量。`killall WindowServer` 带着某些旋钮会黑屏，换旋钮集请**重启**。
 - 重装 NullMoth 驱动会重写 `nvrm610.conf` 和 dylib，上面的二进制补丁、`NVMTL_SURF_SHARE_MINPX`、`NVMTL_NO_NVENC_HEVC` 都会丢，这就是 `nvguard/` 存在的原因。
-- **不要让系统睡眠**（合盖、苹果菜单“睡眠”）：NullMoth 的 NVRM（直到 1.15.0）没有 GPU 的挂起/恢复，唤醒后 GPU 读出 `0xbadf5620`、“GSP core unresponsive”、Xid 119，屏幕不亮，只能强制关机。
-  作者设了 `sudo pmset -a SleepDisabled 1`（合盖也不睡）。显示器休眠没问题。
+- **别在 1.15.0 及更早的内核上让系统睡眠**（合盖、苹果菜单“睡眠”）：那些 NVRM 没有 GPU 的挂起/恢复，唤醒后 GPU 读出 `0xbadf5620`、“GSP core unresponsive”、Xid 119，屏幕不亮，只能强制关机。
+  用 `sudo pmset -a SleepDisabled 1`（合盖也不睡）。显示器休眠没问题。**2.3.7 内核**可以睡（去掉 `-nvrmnopm`，见 fixes.md 第 37 项），用 `sleepguard/` 把“能不能睡”绑在 GPU 是否能恢复上；合盖 / 电池 / 休眠没测过。
 - **ESP 的盘号偶尔会变**：有两块 NVMe 时识别先后不固定（作者 20 次开机里 1 次 `disk1s4` 变成 `disk0s4`，而平时的 `disk0s4` 是 Windows 恢复分区）。写死盘号的脚本会去查错盘或停下；用分区 UUID 找（本仓库所有改 ESP 的脚本都这么做）。
 - **救 macOS 26 别用升级前的 EFI 备份**：iMacPro1,1 上没有 `-no_compat_check` 的配置 26 开不了机。用 `tahoe/` 的救援配置（`RESCUE.md`）。
 

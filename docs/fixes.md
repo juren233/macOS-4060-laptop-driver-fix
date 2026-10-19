@@ -200,6 +200,8 @@
 - ⚠ **这个修复第一次安装时让桌面崩溃循环**：cargo 直接编出来的 `libnvmtl_translate.dylib` **没有代码签名**。普通用户进程照样 `dlopen`（所以上面的测试都通过），但 WindowServer 是平台进程、带库验证，拒绝加载 → “AIR->SPIR-V translator is not loaded” → 管线状态为空 → `MetalShader::CopyPipelineState` 空指针崩溃，随后用户态看门狗 panic，开机停在 verbose 画面。**放进 `/Library/GPUBundles` 的每个 dylib/插件都必须先 `codesign -f -s -`（插件加 `-i com.nullmoth.NVMTLDriver`），并用 `hidpi/tests/lv-test.sh`（`codesign -o library` 的测试程序）复现 WindowServer 的加载条件再安装**；详见 [pitfalls.md](pitfalls.md)。
 - 回滚：`sudo zsh nvguard/install.sh previous`（把上一版重新登记为“好的构建”，守护进程随即把旧文件放回去，安全模式里也能用）。
 
+- 后续（2.3.7 补丁集，翻译器 `passes::split_descriptor_arrays`）：纹理/采样器数组的**每个元素各自一个描述符**（binding 基址 + k）。开了 `robustBufferAccess`（NullMoth 2.0.x 起）之后 NVK 会把 `tex[k]` 夹到 `tex[0]`，`hidpi/catest/sarray.m` 在这种情况下只剩 1/16 页正确；`hidpi/catest/sarraydyn.m` 测动态下标。`METAL2VULKAN_NO_DESCRIPTOR_ARRAY_SPLIT=1` 关闭。
+
 ### 35. three.js 带阴影的 WebGL 页面打不开（Chrome “WebGL context lost”，GPU 进程重启）
 - 现象：three.js 的 3D 页面（例子：带阴影的国际象棋）一打开就 context lost，Chrome GPU 进程反复重启；关掉阴影就正常。
 - 根因：three.js 的阴影贴图是**只有一个元素的**采样器数组 `uniform sampler2D directionalShadowMap[1]`，并作为参数传给 `getShadow()`。ANGLE 发射成 `array<sampler, 1>` 入口参数，
@@ -210,6 +212,30 @@
   本机 3008 个缓存着色器新旧对比，只有这一个变化（失败 → 能翻译）。
 
 ---
+
+### 38. Core Animation 的 uber shader 特化要 3.3 秒（翻译器）+ 图标字形变黑的陷阱
+- 现象：窗口服务/Core Animation 的 `fixed_frag_*` 每个变体冷编译约 3.3 s，超出 CA 的预算，CA 在该进程里退回通用路径（冷/热对比几乎没差别）。
+- 根因：`fixed_frag_*` 用静态初始化器里的函数常量构造 `FragmentShaderConfig` 结构体，再经 `select(has_config, @config, buffer)` + `getelementptr` 读取，这些字段读取从来没被折叠 → 每个“特化”变体其实是整个 684 KB 的 uber shader。
+- 修复：翻译器把这些聚合字段读取折叠掉（`meta::static_init_foldable_aggregates` + LlModule 的聚合镜像）：684 KB → 19–24 KB，3.3 s → ~0.5 s；通用变体 3.0 → 2.45 s。289 个捕获的翻译里 280 个逐字节相同，其余 9 个（`fc_generic 0` 的 fixed_frag）都通过 `spirv-val`。
+  测试：`hidpi/catest/fcbench/`（捕获 + 重放工具）。
+- ⚠ 相关陷阱（`[[visible]]` 函数引用）：函数常量关掉之后仍然活着、又没被提供的 `[[visible]]` 引用，翻译器必须报“visible function reference”这个固定措辞——插件把带这个措辞的失败推迟到管线创建时用链接函数解决。
+  中间版本换了措辞，RenderBox 的自定义片元全部返回 nil，系统所有图标字形变黑。`hidpi/catest/iconfc.m` 检查：0 个 nil，8/8 条 `custom_fn` 管线链接成功。
+- 2.3.7 里还有 `ce133bf`：单字段结构体的 alloca 不再按字段类型重新解释。
+
+### 39. Apple OpenGL 程序（NSOpenGLContext）：挂起、掉帧、整数纹理读错（插件）
+- 2.3.6 把 Apple GL-on-Metal 的绘制路径带进了 NullMoth：深度偏移、provoking vertex、逐实例步进、primitive restart、texel-buffer 视图等。我们在其上有三处自己的修复：
+  1. **IOSurface use count 从 commit 持有到完成，而不是从 encode**：不然每个带窗口的 `NSOpenGLContext` 程序在第一次 `flushBuffer` 就挂住。
+  2. **GL 的垂直同步等待要等到窗口服务器“取走上一帧”，不只是到 vblank**：WindowServer 取走帧比 vblank 晚 0.4–2.7 ms，不等的话 165 Hz 的窗口 GL 跑到约 200 fps，其中每隔一帧被无声丢掉；现在约 152 fps、0 帧被替换。
+  3. **整数纹理**：反射把每个纹理都当 Float，Apple 的 GL 于是把 `R8Snorm/R8Unorm` 视图绑到 `isampler/usampler` 上读出浮点位。现在 `textureDataType` 按翻译器的 `texture_shape` 回答 Int/UInt，`textureType` 按其字段，texel-buffer 视图里等于格式自带填充的 swizzle 当作恒等（不是 nil）。
+- 测试：`hidpi/catest/gl236/`（`glfeat` 6/6、`itex` 7/7、`glvsync`：fps ≤ 显示器 Hz、`glbench`）；`glvsync-ab.sh` 是交错 A/B（新旧插件各取最好一次，桌面负载高时有 BUSY 重试）。
+
+### 40. WindowServer GPU 标记：截图黑、Dock 缩略图空白、锁屏黑（插件 + 2.3.7 内核）
+- 现象：在 WindowServer 的合成还在 GPU 上跑的时候，截图 / 锁屏 / 缩略图去锁 IOSurface，读到上一帧甚至没画完的帧。
+- 修复：内核侧（NVAccel，2.3.7 自带，`debug.nvaccel_surface_gpu_marks`）接受标记；插件侧（NullMoth `79f47d0` / `e75be1e` / `40daaa6` 的插件部分）：在 WindowServer 里，命令缓冲渲染的每个表面在 commit 时标成 pending，最后一个写它的部分结束后标 ready（`NVRM_SS_PLANE_GPU_MARK`，重新标记用 TRYLOCK），
+  共享显存在 commit 时标成最新，于是抓屏的锁会等 GPU；`commitAndWaitUntilSubmitted` 不再等完成（交换由 NVAccel 等）。
+- 测试：NVAccel 只接受进程名为 `WindowServer` 的标记——把测试程序复制成名叫 `WindowServer` 的文件（只 `setprogname` 不够）：`hidpi/catest/wsmark.m`（capture 24/24 正确，旧版 0/24；合成循环 305 → ~390 fps），`hidpi/tests/check-wsmark.sh` 开机后核对（屏幕上 164.7 fps）。
+  `plugshim` 现在也读 `SHIM_PLUGIN`（发行版插件会清掉 `NVMTL_*` 环境变量，子进程拿不到 `NVMTL_TEST_PLUGIN`）。
+- 已知：非 WindowServer 的普通程序在 commit 后立刻 `IOSurfaceLock` 仍可能读到上一帧（上游相同）。开机后 5 分钟内看到过个位数次 GPU 等待超时（约 100 ms 上限），之后持续平稳，原因未查清。
 
 ## 四、Chrome / Electron 的 GPU 合成
 
@@ -341,6 +367,17 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 
 ---
 
+### 37. 系统睡眠（S3）：NullMoth 2.3.7 内核能挂起/恢复 GPU
+- 背景：1.15.0 及以前的 NVRM 没有 GPU 挂起/恢复，唤醒后 GPU 读出 `0xbadf5620`、“GSP core unresponsive”、Xid 119，屏幕不亮（见 docs/pitfalls.md 旧条目）。作者因此一直 `pmset SleepDisabled 1`。
+- 上游自 2.0.3（PR #182）加了 S3：RM standby（`PreserveVideoMemoryAllocations=1`，显存放进可换页的内核内存）、唤醒后恢复 PCI / ReBAR / 根端口窗口、NVRMFB 做 IOGraphics 的 DidWake 工作、NVAccel 的粘性显存。
+  2.3.7 内核里全有，**但 boot-arg `-nvrmnopm` 会把它关掉**（`ioreg -rn NVRM | grep nvrm-pm` 显示 `off (-nvrmnopm)`）。
+- 这台机器的做法（`kexts/sleep/`）：`enable-sleep.sh` 从 ESP 的 `config.plist` 去掉 `-nvrmnopm`（并刷新 efiguard 快照；hibernatemode / powernap / proximitywake 设 0），重启后 `check-sleep.sh` 核对（`nvrm-pm = running`），
+  `sleep-test.sh` 做**一次带定时唤醒的睡眠**（带启动守护和证据报告）。第一次测试通过：RM standby 6.1 s、恢复 4.5 s、2500 MB 显存保留、WindowServer 进程不变、无 panic。`rollback-sleep.sh` 全部撤销（放回 `-nvrmnopm`）。
+- 常驻开关：`sleepguard/`（LaunchDaemon，开机 + 每 10 分钟）。只有“你想要睡眠 **且** 没有 `-nvrmnopm` **且** `nvrm-pm = running`”时才让 `SleepDisabled 0`，其余一律 1（包括回滚到旧内核扩展、恢复失败）；并强制 `hibernatemode 0`。
+  `nvguard/verify.sh` 多了“system sleep”一节：允许睡眠而 GPU 不能恢复时报 DANGER。
+- 没测过：合盖、电池、长时间睡眠、休眠（hibernate）。笔记本面板/背光在唤醒后的表现上游也没测过；作者选择只用合盖/苹果菜单睡眠，不开空闲睡眠。**每台机器自己小心试，先备份。**
+- 适用：内核必须是 2.3.7（或带 PR #182 的版本）。
+
 ## 七、系统层杂项
 
 ### 20. CrossOver / Wine 创建容器被杀
@@ -353,8 +390,10 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - 现象（上游报告，本机未复现）：零拷贝翻转开启后，移动鼠标时偶尔有旧画面闪一下；`-nvrmnoflip` 后消失。
 - 根因：NVRMFB 的 `cursorApply()` 提交光标时顺带把主画面（`fFrontSurf`）也提交一遍，于是每次光标移动都是一次主画面翻转，并按垂直同步节拍；如果零拷贝翻转恰在读取 `fFrontSurf` 与提交之间锁存了更新的帧，旧帧会被放回屏幕，直到下一次翻转。
 - 修复：移植上游 1.13.0 的做法——光标提交只带光标，`submitConfig(…, cursorOnly=true)` 跳过主层。补丁 `patches/nullmoth-1.9.0/0005-nvrmfb-cursor-only.patch`（叠加在 0004 之后）。
-- 验证：作者本机编译安装后重启，HiDPI@165Hz、零拷贝计数、亮度、显示器休眠唤醒均正常（**系统睡眠**不受支持，见 docs/pitfalls.md）。内核扩展安装有重启和黑屏风险，先备份并准备恢复模式回滚。
+- 验证：作者本机编译安装后重启，HiDPI@165Hz、零拷贝计数、亮度、显示器休眠唤醒均正常（系统睡眠见第 37 项，需要 2.3.7 内核）。内核扩展安装有重启和黑屏风险，先备份并准备恢复模式回滚。
 - 1.15.0 的 NVRMFB 本身就是这个做法，不需要 `0005`。
+- 后续（作者的 1.15.0/2.3.7 NVRMFB）：翻转等待改成睡在“翻转已发生”事件上（原来 `IOSleep(1)` 轮询），光标放到 thread call 里应用、移动只发位置（移植上游 `dcc8a69` 的 fb 部分、2.3.6 的光标改动），`flip_latch` 计数器恢复工作；
+  165 Hz 屏上光标 81 → 165 fps，拖窗口 87 → 101 fps（拖窗口的上限在 WindowServer 的合成等待，不在翻转路径）。旋钮 `debug.nvrmfb_flip_wake`、`debug.nvrmfb_cursor_async`（0 = 旧行为，同一次开机内可 A/B）。2.3.7 内核里已包含。
 
 ### 31. 微信输入法开机后在自启应用里打不了字
 - 与驱动无关，但每次开机都会碰到。随登录自启的应用（Claude 桌面端、Steam 等）在 WeType 向 `imklaunchagent` 登记之前就来要它的端点，拿到 `NO Endpoint` 后**一直缓存**，
@@ -393,7 +432,8 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 ## 参考：内部版本演进（作者本机）
 
 插件版本链：v46 → v47（持久化 pipeline cache）→ v48（合入上游 1.9.0：采样器负 LOD、`shaderDrawParameters`、GL zero-net、翻译器的 base_vertex/base_instance；260/260 缓存着色器逐字节一致）→ tiled 渲染影子 → selffetch → gl-sample-positions → 合入 1.13.0（compute stage_in、Unknown 用途、采样器数组）→ 合入 1.14.2（`d8aa6e31`）→ 暂存缓冲复用（`ac789120`）→ 提前提交（`3108990a`）→ 渲染影子复用（`4eb05cf4`）→ 沙箱兜底 + Unity 锁（`dbbc77ec`）→ 单次绘制开销（`93c3be14`）→ 合入 1.15.0（`133fa823`）→ VideoToolbox 回归修正（`e8328b6a`）→ tiled 纹理 mip 链（`b4041b08`）→ 跨进程 IOSurface 写入同步（`9952f874`）；翻译器：`761a54b4`（顶点输出）→ `eb4fb6a3`（Lanczos）→ `50471f26`（1.13.0）→ `aa11ce8d`（采样器数组）→ `f62a16e5`（1.14.2）→ `2a3e7ea7`（地址表合并）→ `70c04748`（1.15.0）→ `183ddb7c`（单元素采样器数组）。NVK：`d94ea1a3`（bindfix）→ `19bbfc23`（去掉 `hw.memsize` 改写）→ `403d4d40`（1.15.0 原版，无补丁）→ `c866c85d`（ZCULL）。
-内核扩展：1.0.10 → 1.9.0 + 本仓库补丁 → 1.15.0 + 本仓库补丁（NVRM `9794974b`、NVRMFB `79d60d24`）。
+内核扩展：1.0.10 → 1.9.0 + 本仓库补丁 → 1.15.0 + 本仓库补丁（NVRM `9794974b`、NVRMFB `79d60d24`）→ 2.3.7 + 本仓库补丁（NVRM `61bc897f`、NVRMFB `5dec327c`）。
+用户态：…→ 1.15.0 → 2.0.4 合并（插件 `ac5df567`→`302fa176`）→ 2.3.6 跟进 → 2.3.7 边界修复 → WindowServer 标记（插件 `1eae68fa`，翻译器 `ce980d35`）。
 `nvguard/` 里记录的哈希就是这些构建的 sha256（你自己的构建哈希不会相同）。
 
 ## 九、1.13.0 用户态补丁集
@@ -432,6 +472,25 @@ Chrome 与 Chromium 系应用默认 `--use-gl=disabled`，软件合成，导致 
 - 1.15.0 是上游“最后一个支持 macOS 15 的版本”，安装包里同时带了 macOS 26 用的 NVAccel（`/Library/NullMoth/kexts/26`），升级到 26 见第十一节。
 - 1.15.0 之后的本地修复：第 29 项的 VideoToolbox 回归修正、第 30 项、第 26 项第 7 点（跨进程写入同步，`per-fix/xsurf-sync.patch`）、第 35 项（`per-fix/sampler1-threejs-shadow.patch`）。`per-fix/` 是各自的单独提交，依赖前面的本地修改，请直接用 `0001`/`0002`。
 
+## 九（又续）、2.3.7 补丁集（作者现在用的：用户态 + 内核）
+
+**基线**：用户态补丁不是整个搬到 v2.3.7 上，而是 **v2.0.4 加上选择性合入的 2.0.x→2.3.7 改动**（作者按需挑，没有全吃）。所以 `patches/nullmoth-2.3.7/0001`、`0002` 打在**上游 v2.0.4**；`0003` 打在 **v2.3.7**。
+已验证：`0001`（含 `build/`）、`0002` 在原版 v2.0.4 上、`0003` 在原版 v2.3.7 上 `git apply --check` 干净；没有重新编译验证（我们的构建是用同一棵树）。`Cargo.lock` 不在补丁里。
+- `0001-plugin.patch`：插件。新增/变化（相对 1.15.0 一套）：2.0.x 的锁与资源集改动、完成的命令缓冲不排空池就释放、host-copy 纹理在每次提交时同步、MSAA 采样位置、`robustBufferAccess` + `imageCubeArray`、可选异步 `replaceRegion`（默认关）；
+  **每个表面每进程只一次 VRAM 导入**，且表面写入守卫只跳过飞行中写入落到的那块存储（`catest/gfx4` 1/20–1/50 读到零就是这个）；2.3.6 的解码器注册（`VTDecoderXPCService`）、无附件的 pass / 分层 3D 目标、`[[color(n)]]` 经输入附件读取、A8 目标放红色通道；
+  2.3.6 的 OpenGL 路径 + 我们的修复（第 39 项）；2.3.7 的边界检查（着色器位码 4 B–64 MB 之外不进进程内读取、位码读取器出错就拒绝该模块、argument encoder 的 `setBuffer` 偏移越界被拒、不能放进 32 位的纹理 region 被拒、区域检查改成减法）；WindowServer GPU 标记（第 40 项）。
+  **没合**：`e57a132`（保留我们的 xsurf-sync）、`236f664`（Chrome 继续走 GPU）、RTX 50 专用的 `e12eaf3`/`a76b3c4`、`#263`、`#274` 的 CPU mip 填充（保留我们的 tiled-mips）。
+- `0002-translator.patch`：翻译器。规划缓存、cube 数组 / 图像 select / `fcmp ord-uno`、循环出口 + 支配关系、向量 `fast_ldexp`、`bvec icmp`；**纹理/采样器数组每个元素一个描述符**（第 25 项）；`[[visible]]` 函数引用在函数常量关掉之后被收口（Spotlight、iconservicesagent、mediaanalysisd、DockHelper 用到的 122 个 MPS kernel 里 110 个）；
+  A8 目标变体、原子图像格式 / `CopyLogical`、Blender、`resource_phi_fold`、`gep_provenance`、`stage_output`；Core Animation 函数常量折叠（第 38 项）；`ce133bf`（单字段结构体 alloca）。保留我们的表合并、sampler[1]、Graphite 输出、Lanczos 偏移、`get_num_samples`。
+- `0003-nvrmfb-vram-noclear.patch`（内核）：2.3.7 的 NVRMFB 上，新显存抽样为零就不再 CPU 清零（RM 的拷贝引擎释放时已洗过显存；约一个核的 10%，弹幕时明显）；`debug.nvrmfb_clear_mode 0` = 总是清零（上游行为）。
+- **NVK**：2.0.5（2.3.6 里带的 `a3a6451e`：发行版构建无 assert、Ada 的异步拷贝引擎做上传队列、NAK 模板导出）+ ZCULL。ZCULL 的脚本按版本分：`codec-vulkan/vulkan/mk-zcull-115.py`（1.15.0）、`mk-zcull-204.py`（2.0.4）、`mk-zcull-236.py`（2.0.5/2.3.6）。
+- **内核**：NVRM = 官方 2.3.7 + `kexts/patch-nvrm-237.py`（head-scaler，按特征串匹配；启动即翻转已经是上游行为，不再补）；NVRMFB = v2.3.7 源码 + `0003`（`kexts/build-fb-237.sh`）；NVAccel 用官方 macOS 26 版，NVRMAGDC 用官方。
+  安装 `kexts/install-kexts-237.sh [--check]`（只建测试内核集合；带备份；在 macOS 26 上；需要 `ESP_UUID`），回滚 `kexts/rollback-kexts-237.sh`（只拷文件，恢复模式里也能用）。脚本里的哈希是作者的构建，换成你的。
+  boot-args：`nvfbhidpi=1`（缩放的 HiDPI 模式**必须**）、`nvrmmapowner=0`（map-owner 检查只计数；几天没有 `MAP-OWNER-MISMATCH` 就可以去掉）、`-nvrmnopm`（想要睡眠就别加，第 37 项）。`kexts/build-nvrm-from-source.sh`：NVRM 也能从源码编（与官方 2.3.7 只差 RM 编译器的代码生成），用来交叉核对 head-scaler。
+- 测试：`hidpi/catest/` 新增 `secreg`（2.3.7 边界回归 7/7）、`sarraydyn`、`a8target`、`fetchpart`、`tiledmipsown`、`iconfc`、`gl236/`、`fcbench/`、`wsmark`、`wincap`。`gfx4` 现在只在生产者仍需要信用时发信用、忽略 SIGPIPE、失败时打印第一个不同的像素。
+- 守护：`nvguard/install.sh` 记录这一套的哈希和逐步回滚别名（`previous`、`wsmarkprev`、`sec237prev`、`fcfastprev`、`itexprev`、`gl236`、`m236gl`、`m236xlate`、`m204prev`、`zcullprev`），`NVMTL_RES2_WS=1`（2.3.6 默认：Metal 报告整块显存为工作集）；
+  `efiguard` 守护 `nvfbhidpi=1 -nvrmnopm nvrmmapowner=0`（只记录安装时已存在的）。
+
 ## 十、ESP 守护（efiguard）
 
 nvguard 只守护 `/Library` 下的驱动文件；**OpenCore ESP 上的修复**（AppleALC 与 `alcid`、Wi-Fi/蓝牙/NVDSM/BrightnessKeys/VoodooI2C 的 kext、`SSDT-PS2KEYS`、关键 boot-args）另有一个 `efiguard/`：
@@ -467,7 +526,7 @@ macOS 26 专用的脚本都在 [`tahoe/`](../tahoe/README.md)。作者本机：m
 - **ESP 的盘号偶尔会变**：这台机器有两块 NVMe，macOS 按识别先后编号，先后不固定。系统日志里 20 次开机，19 次 ESP 是 `disk1s4`（装 macOS 的盘先出来，Windows 盘约 20 秒后出现，成为 disk0），
   1 次是 `disk0s4`（两块几乎同时出现，装 macOS 的盘拿到了 disk0）。平时的 `disk0s4` 恰好是 Windows 盘上的“Windows 恢复”分区，写死盘号很危险。
   仓库里所有改 ESP 的脚本都按分区 UUID（`ESP_UUID`）找 ESP，不再用盘号。查自己的机器：`log show --predicate 'process == "diskarbitrationd" AND eventMessage BEGINSWITH "created disk"'`。
-- 升级后检查：Wi-Fi、蓝牙、亮度、声音（第 33 项）、电源（第 34 项）、HiDPI@165Hz。**不要测系统睡眠**（不受支持，见 docs/pitfalls.md）。
+- 升级后检查：Wi-Fi、蓝牙、亮度、声音（第 33 项）、电源（第 34 项）、HiDPI@165Hz。系统睡眠只有 2.3.7 内核才有，见第 37 项（1.15.0 上不要睡）。
 
 ### 33. macOS 26 没有内置声卡（AppleHDA 被移除）
 - 现象：升级到 26 后内置扬声器 / 麦克风消失。AppleALC 照常加载，但它是给 AppleHDA 打补丁的，而 **26 把 AppleHDA.kext 从系统里删了**。

@@ -36,6 +36,14 @@ git apply $P/0003-nvrmfb-vram-noclear.patch      # 内核扩展（NVRMFB），�
 # 旧的用户态补丁集：v1.14.2 → patches/nullmoth-1.14.2/0001、0002；v1.13.0 → patches/nullmoth-1.13.0/0001、0002
 ```
 1.9.0 的四个补丁已验证可在原版 v1.9.0 上干净应用，且打补丁后的插件可编译；1.14.2、1.15.0 的补丁同样验证过（应用后的源码与作者在用的构建一致，只有注释里的路径不同）。
+**现在的 2.3.7 一套**（用户态打在 **v2.0.4**，内核打在 **v2.3.7**，见 fixes.md 第九节“又续”）：
+```bash
+git checkout v2.0.4
+P=/path/to/this-repo/patches/nullmoth-2.3.7
+git apply $P/0001-plugin.patch $P/0002-translator.patch
+git checkout v2.3.7 && git apply $P/0003-nvrmfb-vram-noclear.patch      # 内核扩展（NVRMFB）
+# 内核：NVRM 官方 2.3.7 + kexts/patch-nvrm-237.py；kexts/install-kexts-237.sh [--check] 装，rollback-kexts-237.sh 回滚（macOS 26）
+```
 1.9.0–1.14.2 的翻译器补丁里带着作者离线构建时被精简的 `translator/translator/Cargo.lock`；1.15.0 的不带，用上游的。
 `per-fix/` 里的是各修复的独立 diff，用来阅读，**不要**按顺序叠加。
 
@@ -159,4 +167,4 @@ H.264 解码提速（修复 14）：`mk-detile8.py`、`mk-sleep.py` 生成补丁
 3. `sudo -E ESP_UUID=… bash tahoe/install-rescue.sh`：把救援配置放到 ESP 上，读一遍 `tahoe/RESCUE.md`。可选 `tahoe/add-ocrec.sh`（Limine 用户的恢复模式入口）。
 4. `sudo -E ESP_UUID=… bash tahoe/update-26.sh prepare`，然后到“系统设置 → 软件更新”升级。第一次进 26 会自动收尾并重启一次；日志 `/Library/NullMoth/tahoe/update.log`。
 5. 进 26 后：声卡 `sudo bash tahoe/audio/install-hda26.sh`（需要 BTLEFix 1.0.6 在 ESP 上），电源/FileVault 有问题时 `sudo -E ESP_UUID=… bash tahoe/power/install-acpsr.sh`，
-   然后重跑 `efiguard/install.sh` 和 `tahoe/install-rescue.sh` 刷新快照与救援配置。**不要测试系统睡眠。**
+   然后重跑 `efiguard/install.sh` 和 `tahoe/install-rescue.sh` 刷新快照与救援配置。系统睡眠只有 2.3.7 内核才安全（第 37 项），1.15.0 上不要睡。

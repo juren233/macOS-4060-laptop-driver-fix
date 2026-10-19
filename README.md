@@ -3,7 +3,7 @@
 [English](README.en.md)
 
 在 **黑苹果（OpenCore）+ RTX 4060 笔记本独显直连** 上（macOS 15.8.1，现已升级到 **macOS 26.7.1**），把 [NullMoth NVIDIA 驱动](https://github.com/nullmoth/nvidia-macos-driver)
-（作者现用 **v1.15.0** 的内核扩展与用户态）用起来的一整套补丁、脚本和排错记录：HiDPI、WindowServer 花屏/黑块/卡顿、Chrome/Steam/Electron 渲染错误、
+（作者现用 **v2.3.7** 的内核扩展 + **v2.0.4 加选择性合入 2.3.x** 的用户态）用起来的一整套补丁、脚本和排错记录：HiDPI、WindowServer 花屏/黑块/卡顿、Chrome/Steam/Electron 渲染错误、
 远程控制与视频编解码、屏幕亮度、Wi-Fi/蓝牙、触控板、内置声卡，以及升级到 macOS 26 的全过程。
 
 > **这是什么 / 不是什么**
@@ -20,14 +20,14 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 
 ## 版本与适用范围
 
-**作者本机现在的组合**：macOS **26.7.1**（从 15.8.1 升级，SMBIOS 仍是 iMacPro1,1）+ NullMoth **v1.15.0** 的内核扩展与用户态 + 本仓库的 1.15.0 补丁集。
-旧组合（NullMoth v1.9.0 内核扩展 + v1.9.0 / v1.13.0 / v1.14.2 用户态补丁，macOS 15）的补丁仍保留在各自目录。
+**作者本机现在的组合**：macOS **26.7.1**（从 15.8.1 升级，SMBIOS 仍是 iMacPro1,1）+ NullMoth **v2.3.7** 的内核扩展 + 以 **v2.0.4 为基线并选择性合入 2.3.x 改动** 的用户态 + 本仓库的 2.3.7 补丁集。
+1.15.0 一套（`patches/nullmoth-1.15.0/`）仍可用，是 macOS 15 上最后支持的版本。旧组合（NullMoth v1.9.0 内核扩展 + v1.9.0 / v1.13.0 / v1.14.2 用户态补丁，macOS 15）的补丁仍保留在各自目录。
 
 | 层 | 选哪个版本 | 说明 |
 |---|---|---|
-| 插件 NVMTLDriver、翻译器 | `patches/nullmoth-1.15.0/0001`、`0002`（推荐）；旧的 `nullmoth-1.14.2/`、`nullmoth-1.13.0/`、`nullmoth-1.9.0/0001`、`0002` | 选一套，不要叠加。新版已去掉上游已吸收的部分；修复 26–29 在 1.14.2 及以后，29 的 VideoToolbox 回归修正、30、35 和 26 的跨进程同步只在 1.15.0 版里 |
-| 内核扩展 NVRM/NVAccel/NVRMFB | **1.15.0**：NVRM 用 `kexts/patch-nvrm-115.py`，NVRMFB 用 `patches/nullmoth-1.15.0/0003`，NVAccel/NVRMAGDC 原版；旧基线 1.9.0：`patches/nullmoth-1.9.0/0003–0006` | 1.15.0 自带背光和“光标只提交光标”（17 的 NVRMFB 部分、21）；二进制补丁逐字节断言，对不上会拒绝执行 |
-| NVK（`libvulkan_nouveau`） | 1.15.0 原版即可；可选 `codec-vulkan/vulkan/vk-zcull.sh`（ZCULL，修复 36）；1.9.0 用 `codec-vulkan/vulkan/` | 5、27 的 NVK 部分上游已吸收 |
+| 插件 NVMTLDriver、翻译器 | `patches/nullmoth-2.3.7/0001`、`0002`（**打在上游 v2.0.4 上**，当前）；`patches/nullmoth-1.15.0/0001`、`0002`（打在 v1.15.0 上，macOS 15）；旧的 `nullmoth-1.14.2/`、`nullmoth-1.13.0/`、`nullmoth-1.9.0/0001`、`0002` | 选一套，不要叠加。新版已去掉上游已吸收的部分；修复 26–29 在 1.14.2 及以后，29 的 VideoToolbox 回归修正、30、35 和 26 的跨进程同步在 1.15.0 版里；38–40 只在 2.3.7 版里 |
+| 内核扩展 NVRM/NVAccel/NVRMFB | **2.3.7**（macOS 26）：NVRM 用 `kexts/patch-nvrm-237.py`，NVRMFB 用 `patches/nullmoth-2.3.7/0003`，NVAccel（26 版）/NVRMAGDC 原版，安装 `kexts/install-kexts-237.sh`；能睡眠（修复 37）。**1.15.0**：NVRM 用 `kexts/patch-nvrm-115.py`，NVRMFB 用 `patches/nullmoth-1.15.0/0003`，NVAccel/NVRMAGDC 原版；旧基线 1.9.0：`patches/nullmoth-1.9.0/0003–0006` | 1.15.0 自带背光和“光标只提交光标”（17 的 NVRMFB 部分、21）；二进制补丁逐字节断言，对不上会拒绝执行 |
+| NVK（`libvulkan_nouveau`） | 1.15.0 原版即可；可选 `codec-vulkan/vulkan/vk-zcull.sh`（ZCULL，修复 36；2.0.4 / 2.0.5 用 `mk-zcull-204.py` / `mk-zcull-236.py`）；1.9.0 用 `codec-vulkan/vulkan/` | 5、27 的 NVK 部分上游已吸收 |
 | NVDEC / NVENC 字节补丁 | 针对 1.9.0 的二进制（作者在 1.15.0 下仍用这些补丁版） | 脚本带断言，字节对不上会拒绝执行，不会乱写 |
 | macOS 26 | `tahoe/` | 升级、救援、声卡、电源，见修复 32–34 |
 
@@ -35,13 +35,14 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 
 | 你的情况 | 适用的修复 |
 |---|---|
-| 任何 NullMoth 支持的 NVIDIA 卡 + macOS 15 / 26（用户态，与机型无关） | 3、4、6、7、8、9、10、11、12、13、16、22、23、25、26（插件部分）、27、28、29、30、35 |
+| 任何 NullMoth 支持的 NVIDIA 卡 + macOS 15 / 26（用户态，与机型无关） | 3、4、6、7、8、9、10、11、12、13、16、22、23、25、26（插件部分）、27、28、29、30、35、38、39、40 |
 | 与驱动无关的 macOS 问题 | 20（CrossOver/Wine）、31（微信输入法） |
 | 需要特定 NullMoth 版本的二进制（字节补丁/偏移量绑定版本） | 2、5（NVK 部分）、14、15、27（NVK 部分）、36（1.15.0 NVK） |
 | 仅 Ada（RTX 40 系）：NVDEC/NVENC 的 t2d 布局 | 14、15 |
 | 取决于你的面板和主板 | 1（HiDPI：面板 ID、刷新率）、17（亮度：DSDT 里的 `_DSM`/`_DOD` 路径） |
 | 仅限同款硬件 | 18（Intel AX211）、19（ELAN0420 I²C 触控板）、24（ALC256 声卡，layout 因机型而异） |
 | 升级到 macOS 26 | 32（iMacPro1,1 这类被淘汰的机型 + 打过补丁的驱动）、33（需要 AppleHDA 的声卡）、34（DSDT 的 `_PSR` 依赖 Windows 方法时） |
+| 需要 2.3.7 内核 | 37（系统睡眠）、40（内核侧的标记） |
 | 内核扩展，风险较高 | 21（光标独立提交，预防性；1.15.0 已自带）、26 的 NVRMFB 部分（新显存不再 CPU 清零） |
 
 建议顺序：先装用户态（插件、翻译器）并稳定使用；再按需做字节补丁；最后才碰内核扩展；升级 macOS 26 之前先读第 32 项。机型相关的几项（1、17、18、19、33、34）要先对照自己的硬件，**不要整套照抄**。
@@ -86,6 +87,10 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 | 34 | macOS 26 插着电源却显示电池供电，FileVault 转换一直“已暂停” | DSDT 的 `AC._PSR` 依赖 Windows 方法，在 macOS 下求值失败；APFS 在电池供电时暂停加密转换 | `SSDT-ACPSR` 提供自己的 `_PSR`（返回 `ACFG`）+ ACPI 改名 `_PSR → XPSR` | `tahoe/power/` |
 | 35 | three.js 带阴影的 WebGL 页面打不开（context lost，GPU 进程反复重启） | 阴影贴图是单元素采样器数组 `sampler2D shadowMap[1]`，翻译器只把 2 个及以上的当数组，长度 1 的采样器指针丢失 | 翻译器把 `array<sampler, 1>` 也按采样器数组绑定 | `patches/nullmoth-1.15.0/per-fix/sampler1-threejs-shadow.patch`、`hidpi/catest/sarray1.m` |
 | 36 | WebGL 3D 页面（three.js 象棋）GPU 慢 | ANGLE 的 MSAA 着色器都写 `sample_mask` → 没有提前深度测试；NullMoth 的 NVRM 后端把 NVK 的 ZCULL 关死了 | NVK 二进制补丁：从 RM 取 ZCULL 信息并打开（象棋整帧 GPU 11.6 → 7.2 ms） | `codec-vulkan/vulkan/{mk-zcull-115.py,vk-zcull.sh}`、`hidpi/catest/{earlyz,rtcheck}.m` |
+| 37 | 合盖/苹果菜单睡眠后屏幕不亮（旧内核） | 1.15.0 及以前的 NVRM 没有 GPU 挂起/恢复；2.3.7 有，但 `-nvrmnopm` 把它关了 | 去掉 `-nvrmnopm`，`sleepguard` 只在 GPU 能恢复时允许睡眠；带定时唤醒的单次测试脚本（RM standby 6.1 s、恢复 4.5 s、显存保留） | `kexts/sleep/`、`sleepguard/` |
+| 38 | 系统窗口/图标渲染慢；CA 退回通用路径；图标字形全黑（中间版本） | Core Animation 的 uber shader 函数常量结构体读取从不折叠，每个“特化”变体都是整个 684 KB（~3.3 s）；`[[visible]]` 引用的报错措辞不对导致 RenderBox 全 nil | **翻译器**折叠这些聚合字段读取（3.3 → ~0.5 s）；固定的 “visible function reference” 措辞 | `patches/nullmoth-2.3.7/0002`、`hidpi/catest/fcbench/`、`iconfc.m` |
+| 39 | Apple OpenGL 程序挂住 / 窗口 GL 丢帧 / 整数纹理读成浮点 | use count 只从 encode 持有；垂直同步只等到 vblank，不等 WindowServer 取走上一帧；反射把所有纹理当 Float | use count 持有到完成；等到窗口服务器取走；按 `texture_shape` 反射 Int/UInt | `patches/nullmoth-2.3.7/0001`、`hidpi/catest/gl236/` |
+| 40 | 截图黑、Dock 缩略图空白、锁屏黑 | WindowServer 的合成还在 GPU 上跑，抓屏去锁表面读到旧帧 | 插件在 commit 标 pending、写完标 ready，共享显存标最新（配 2.3.7 内核 NVAccel） | `patches/nullmoth-2.3.7/0001`、`hidpi/catest/wsmark.m` |
 
 每一项的详细分析、验证方法和注意事项见 **[docs/fixes.md](docs/fixes.md)**。
 
@@ -95,11 +100,12 @@ Wine/CrossOver 被系统直接杀掉。**先备份 EFI、保留一个可用的�
 patches/nullmoth-1.9.0/   对上游 v1.9.0 的累计补丁（plugin / translator / NVRM / NVRMFB）
 patches/nullmoth-1.13.0/  重新整理到上游 v1.13.0 之上的插件 / 翻译器补丁（内核扩展仍以 1.9.0 为基线）
 patches/nullmoth-1.14.2/  重新整理到上游 v1.14.2 之上的插件 / 翻译器补丁（含修复 26–29）
-patches/nullmoth-1.15.0/  重新整理到上游 v1.15.0 之上的插件 / 翻译器 / NVRMFB 补丁（当前推荐，含修复 26–30、35）
+patches/nullmoth-1.15.0/  重新整理到上游 v1.15.0 之上的插件 / 翻译器 / NVRMFB 补丁（含修复 26–30、35）
   per-fix/                逐项修复的独立 diff（便于阅读，各自以当时的基线生成，不保证按序可叠加）
+patches/nullmoth-2.3.7/   打在上游 v2.0.4（0001 插件、0002 翻译器）/ v2.3.7（0003 NVRMFB）上的补丁（当前，含修复 38–40）
 patches/voodoo/           VoodooGPIO 补丁
 patches/itlwm/            laobamac/itlwm（AirportItlwm）开机初始化自愈补丁
-kexts/                    NVRM 二进制补丁脚本（head-scaler + 启动即翻转）、1.9.0 / 1.15.0 内核扩展的编译、安装、回滚
+kexts/                    NVRM 二进制补丁脚本（head-scaler）、1.9.0 / 1.15.0 / 2.3.7 内核扩展的编译、安装、回滚；sleep/：2.3.7 的系统睡眠（修复 37）
 hidpi/                    HiDPI 显示覆盖、插件/翻译器热替换脚本、测试程序源码（catest/）、诊断小工具
   legacy-1.0.10/          基于 NullMoth 1.0.10 的旧安装脚本（已被 1.9.0 路线取代，仅供参考）
 codec-vulkan/             NVDEC / NVENC / libvulkan_nouveau 的二进制补丁与测试（1.15.0 NVK 的 ZCULL：vulkan/vk-zcull.sh）
@@ -109,6 +115,7 @@ trackpad/                 VoodooI2C + PS2 按键映射
 audio/                    内置声卡（AppleALC + alcid）安装/回滚脚本
 tahoe/                    macOS 26：升级（prepare/finish）、ESP 救援配置、恢复模式入口、AppleHDA（audio/）、AC 电源 SSDT（power/）
 nvguard/                  “驱动被重装后自动把补丁放回去”的 LaunchDaemon（参考实现）
+sleepguard/               “系统睡眠只在 GPU 能恢复时才允许”的 LaunchDaemon
 efiguard/                 “ESP 上的修复被丢了就自动补回”的 LaunchDaemon（可在 ESP 副本上演练）
 tools/                    备份、NVRM 运行时旋钮、开机 Wi-Fi 日志抓取（wifi-bootlog）、USB 掉线记录（usb-watch）、微信输入法开机预启动（wetype）
 docs/                     详细文档
